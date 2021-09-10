@@ -1,0 +1,6 @@
+-category:Sp template with non-default spacing
+#-namespace:Page
+-summary:Convert {{sp}} with a spacing parameter to the {{lsp}} syntax
+-regex
+\{\{ *[Ss]p *\|([^{]*?)\| *([0-9.]+(?:em|ex|px)) *\}\}
+{{lsp|\2|\1}}

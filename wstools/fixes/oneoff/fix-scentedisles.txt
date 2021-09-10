@@ -1,0 +1,19 @@
+-prefixindex:Page:Scented isles and coral gardens- Torres Straits, German New Guinea and the Dutch East Indies, by C.D. Mackellar, 1912.pdf
+-summary:Miscellaneous typo fixes (spaces before punctuation, <br> at end of para)
+-regex
+ ([?!;:,])
+\1
+([?!;:,]) ”
+\1”
+<br>\n\n
+\n\n
+“ 
+“
+ ”
+”
+(?<=[A-Z])———
+{{bar|3}}
+(?<=[A-Z])——
+{{bar|2}}
+—— *
+—

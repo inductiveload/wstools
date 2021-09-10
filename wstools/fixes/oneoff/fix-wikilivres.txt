@@ -1,0 +1,6 @@
+-search:insource:/wikilivres *=/
+-ns:,114
+-summary:Remove empty Wikilivres parameter, since Wikilivres is dead
+-regex
+ *\| *wikilivres *= *\n?(?=\s*[\|}])
+

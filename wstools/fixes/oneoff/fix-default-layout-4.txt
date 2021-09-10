@@ -1,0 +1,5 @@
+-transcludes:Template:Default layout
+-summary:Replace Layout 4 with Layout 2: the two are now equivalent and serif control is a user option
+-regex
+(\{\{ *[Dd]efault[ _]layout *\| *)Layout[_ ]4
+\1Layout 2

@@ -1,0 +1,6 @@
+-prefixindex:Page:Twentieth Century Impressions of Hongkong, Shanghai, and other Treaty Ports of China.djvu
+-summary:Fix percent-encodings in {{FI}}
+_%26_
+_&_
+%27
+'

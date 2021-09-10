@@ -1,0 +1,16 @@
+-pt:2
+-category:Sp template with non-default spacing
+-summary:Convert {{sp}} with a spacing parameter to the {{lsp}} syntax
+-regex
+\{\{ *[Ss]p *\|(['"])\| *[0-9.]+(?:px|em) *\}\}'
+{{\1 '}}
+\{\{ *[Ss]p *\|''\| *[0-9.]+(?:px|em) *\}\}
+{{' '}}
+\{\{ *[Ss]p *\|"'\| *[0-9.]+(?:px|em) *\}\}
+{{" '}}
+\{\{ *[Ss]p *\| *([^{}]+ ?) *\| *([0-9.]+(?:em|ex|px|rem)) *\}\}
+{{lsp|\2|\1}}
+\{\{ *[Ss]p *\| *([^{}]*?)([a-zA-Z][.,;:!? ]?)? *\| *([0-9.]+(?:em|ex|px|rem)) *\}\}([.])?(?![A-Za-z])
+{{lsp|\3|\1|\2\4}}
+\{\{ *[Ss]p *\| *([^{}]*?) *\| *([0-9.]+(?:em|ex|px|rem)) *\}\}([A-Za-z]?[.,:;!?’}])
+{{lsp|\2|\1|\3}}

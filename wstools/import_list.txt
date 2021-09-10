@@ -1,0 +1,19 @@
+Template:Header
+Template:Center
+Template:Block center
+Template:Float right
+Template:Right
+Template:Lorem ipsum
+Template:Xxxx-larger
+Template:Xxx-larger
+Template:Xx-larger
+Template:X-larger
+Template:Larger
+Template:Smaller
+Template:Fine
+Template:X-smaller
+Template:Xx-smaller
+Template:Main other
+Template:Insular
+Module:Wikibase
+Module:String

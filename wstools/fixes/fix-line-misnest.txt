@@ -1,0 +1,15 @@
+-pt:2
+-linter:misnested-tag
+-prefixindex:Catholic Encyclopedia (1913)
+-intersect
+-summary:Convert <small> to {{smaller block}} (fixes [[Special:LintErrors/misnested-tag]] and line heights)
+#-summary:Convert misused <small> to {{sc}}
+-regex
+< *(?:SMALL|small) *>B\. ?C\.([;:,!?]?)< */(?:SMALL|small) *>
+{{BC}}\1
+< *(?:SMALL|small) *>A\. ?D\.([;:,!?]?)< */(?:SMALL|small) *>
+{{AD}}\1
+([A-Z]?)< *(?:SMALL|small) *>([A-ZÜÖÉÈÄÓ.m.,;:?!'"’” ]+)< */(?:SMALL|small) *>
+{{sc|\1{{subst:lc:\2}}}}
+< *(?:SMALL|small) *>((?:.*\n\n)+.*)< */(?:SMALL|small) *>
+{{smaller block|\1}}

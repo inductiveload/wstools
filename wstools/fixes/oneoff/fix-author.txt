@@ -1,0 +1,5 @@
+-prefixindex:The Three_Princes_of_Serendip
+-namespace:Translation
+-summary:Author name to [[Author:Cristoforo Armeno]]
+= M. Cristoforo Armeno
+= Cristoforo Armeno

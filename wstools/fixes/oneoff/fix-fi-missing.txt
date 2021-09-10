@@ -1,0 +1,4 @@
+-cat:Pages with script errors
+-summary:Fix missing images in {{FI}}
+|file={{missing image}}
+|file=missing

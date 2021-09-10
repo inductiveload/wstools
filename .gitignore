@@ -1,0 +1,9 @@
+# requests_caches
+*.sqlite
+
+*.pyo
+*.pyc
+venv
+
+# config files
+.env

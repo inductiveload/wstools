@@ -1,0 +1,7 @@
+-prefixindex:What Katy Did.djvu
+-namespace:Page
+-summary:{{dropinitial}} instead of {{img float}}
+-regex
+-dotall
+{{[iI]mg float.*?Capital[_ ]([A-Z]),.*?}}
+{{dropinitial|[[File:Capital_\1,_What_Katy_Did,_1873.jpg|75px|alt=\1]]}}

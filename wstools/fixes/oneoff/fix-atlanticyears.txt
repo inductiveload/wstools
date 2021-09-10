@@ -1,0 +1,27 @@
+-transcludes:Template:Atlantic Monthly link
+-summary:Fix misuse of year parameter in {{Atlantic Monthly link}}
+-regex
+\| *year *= *Jan(uary|\.)?,? *
+|month=1|year=
+\| *year *= *Feb(ruary|\.)?,? *
+|month=2|year=
+\| *year *= *Mar(ch|\.)?,? *
+|month=3|year=
+\| *year *= *Apr(il|\.)?,? *
+|month=4|year=
+\| *year *= *May,? *
+|month=5|year=
+\| *year *= *Jun(e|\.)?,? *
+|month=6|year=
+\| *year *= *Jul(y|\.)?,? *
+|month=7|year=
+\| *year *= *Aug(ust|\.)?,? *
+|month=8|year=
+\| *year *= *Sep(tember|t?\.)?,? *
+|month=9|year=
+\| *year *= *Oct(ober|\.)?,? *
+|month=10|year=
+\| *year *= *Nov(ember|\.)?,? *
+|month=11|year=
+\| *year *= *Dec(ember|\.)?,? *
+|month=12|year=

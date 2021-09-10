@@ -1,0 +1,6 @@
+-prefixindex:Page:Biggers_and_Ritchie_-_Inside_the_Lines.djvu
+-linter:misnested-tag
+-summary:Fix [[Special:LintErrors/misnested-tag|misnested tags]]
+-regex
+''\{\{RunningHeader\|\|(.*?)\|(.*?)\}\}''
+{{RunningHeader||''\1''|''\2''}}

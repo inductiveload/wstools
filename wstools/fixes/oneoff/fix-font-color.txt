@@ -1,0 +1,16 @@
+-pt:2
+-linter:tidy-font-bug
+-summary:Tidy up obsolete HTML entities (<font>/<small> -> <span>)
+-regex
+< *(?:small|SMALL) *>< *(?:font|FONT) color="?([a-z\-]+)"? *>
+<span style="font-size:smaller; color:\1;">
+< */ *(?:font|FONT) *>< */ *(?:small|SMALL) *>
+</span>
+< *(?:font|FONT) color="?(#?[0-9A-Za-z\-]+)"? *>
+<span style="color:\1;">
+< *(?:font|FONT) color="?(#?[0-9A-Za-z\-]+)"? *size="?2"? *>
+<span style="font-size:smaller; color:\1;">
+< *(?:font|FONT) style="?(.*?)"? *>
+<span style="\1;">
+< */ *(?:font|FONT) *>
+</span>

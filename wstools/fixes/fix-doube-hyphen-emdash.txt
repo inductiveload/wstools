@@ -1,0 +1,7 @@
+-prefixindex:Page:Mrs. Dalloway - Virginia Woolf.pdf
+-summary:Convert '--' to emdash (—)
+-regex
+ *-- *(?=[^-])
+—
+(?<=</noinclude>) 
+

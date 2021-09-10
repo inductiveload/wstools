@@ -1,0 +1,5 @@
+-pt:2
+-search:insource:/Transclusion=X/
+-summary:Rename transclusion status = X → no
+|Transclusion=X
+|Transclusion=no

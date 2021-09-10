@@ -1,0 +1,7 @@
+-prefixindex:Page:What I saw in America.djvu
+-summary:Move RH formatting to index styles
+-regex
+{{rule(\|.*?)?}}\s*(?={{[Rr][uh])
+
+}}\s*{{rule}}\s*(?=</noin)
+}}

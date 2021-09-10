@@ -1,0 +1,7 @@
+-pt:2
+-prefixindex:Page:The Lives and Characters of the English Dramatick Poets.djvu
+#-transcludes:Template:Dropinitial
+#-intersect
+-summary:Make drop initial explicit with 1=A
+{{di}}
+{{di|A}}

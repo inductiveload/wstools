@@ -1,0 +1,7 @@
+-pt:2
+-prefixindex:Page:Medicina de quadrupedibus.djvu
+-transcludes:Template:Ruby
+-summary:{{larger}} no longer needed for {{ruby}} RT, as this is handled in global CSS
+-regex
+{{ruby\|(.*?)\|{{larger\|(.*?)}}}}
+{{ruby|\1|\2}}

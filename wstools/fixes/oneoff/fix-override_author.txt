@@ -1,0 +1,7 @@
+-pt:2
+#-category:Pages with override author (spaced)
+-search:insource:/override translator/
+-summary:Convert "override translator" to "override_translator" for consistency (the two do not categorise the same)
+-regex
+override translator( *=)
+override_translator\1

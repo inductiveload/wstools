@@ -1,0 +1,5 @@
+-prefixindex:Letters from a Farmer in Pennsylvania
+-summary:Use rule parameter of {{smallrefs}}
+-regex
+(?:\s*{{ *[Rr]ule *}})?\s*(< *references */>|{{[Ss]mallrefs}})
+\n{{smallrefs|rule=yes}}

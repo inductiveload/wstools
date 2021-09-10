@@ -1,0 +1,5 @@
+-prefixindex:Index:Chaucer - Complete works
+-summary:Fix author name field
+-regex
+ *d. 1400
+

@@ -1,0 +1,7 @@
+-prefixindex:Bull-dog Drummond
+#-namespace:Page
+-summary:Remove obsolete 'indented-page' div
+-regex
+<div class=.*?>
+\n
+</div>

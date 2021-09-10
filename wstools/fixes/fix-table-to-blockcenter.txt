@@ -1,0 +1,8 @@
+-prefixindex:Bürger's Lenore, Rossetti 1900.djvu
+-namespace:Page
+-summary:USe block center rather than table with align=center
+-regex
+{\| .*\n\|-\s+\|
+{{block center/s}}
+\|}
+{{block center/e}}

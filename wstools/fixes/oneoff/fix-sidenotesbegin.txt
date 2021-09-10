@@ -1,0 +1,9 @@
+-prefixindex:Page:Agreement relating to Malaysia (1963).djvu
+-summary:Fix {{sidenotes begin}} and {{sidenotes end}} in main page body (move to header field)
+-regex
+</noinclude> *\{\{[Ss]idenotes begin\|.*?\}\}
+{{sidenotes begin|side={{subst:#ifexpr: {{subst:SUBPAGENAME}} mod 2|left|right}}}}</noinclude>
+\{\{[Ss]idenotes end\}\} *<noinclude>
+<noinclude>{{sidenotes end}}
+{{sidenotes begin}}
+{{sidenotes begin|side={{subst:#ifexpr: {{subst:SUBPAGENAME}} mod 2|left|right}}}}

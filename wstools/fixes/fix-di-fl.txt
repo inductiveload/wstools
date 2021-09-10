@@ -1,0 +1,7 @@
+$DI= *[dD](?:ropinitial|oi) *
+-pt:2
+-prefixindex:Page:A Collection of Several Philosophical Writings of Dr. Henry More.djvu
+-summary:Use the fl parameter of {{dropinitial}} for preceding text
+-regex
+{{$DI\|(.*?)\|1em}} *{{$DI\|
+{{dropinitial|fl=\1&nbsp;|

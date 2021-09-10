@@ -1,0 +1,10 @@
+-prefixindex:Problems of Empire
+-summary:No longer need fixed margin div to provide space for sidenotes - defer to layout CSS (this enables user choice as well as exports and mobile use)
+-pt:2
+-regex
+<div *style=".*?"? *> *\n?
+
+< */ *div *> *\n?
+
+ *> *\< */pages\>
+ />

@@ -1,0 +1,5 @@
+-transcludes:Template:Plain heading
+-summary:Update {{plain heading}} to {{classed heading}}
+-regex
+\{{ *[Pp]lain heading *\|
+{{classed heading|

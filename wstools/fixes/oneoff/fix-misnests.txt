@@ -1,0 +1,6 @@
+-namespace:User talk
+-linter:misnested-tag
+-summary:Fix [[Special:LintErrors/misnested-tag|misnested tags]]
+-regex
+<sup>'''''\[\[(.*?)\]\]:'' (.*?)'''(.*)</sup>'''''
+<sup>'''''[[\1]]:'' \2\3'''</sup>
