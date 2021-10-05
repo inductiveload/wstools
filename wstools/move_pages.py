@@ -63,7 +63,7 @@ def main():
     if args.from_index == args.to_index:
         summary = f"Shifting pages by offset: {args.offset}"
     else:
-        summary = f"Moving pages to new scan {args.to_index}"
+        summary = f"Moving pages to new scan [[Index:{args.to_index}]]"
 
         if args.offset:
             summary += f" with offset {args.offset}"

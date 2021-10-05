@@ -461,6 +461,36 @@ def convert_pages(files, tempdir, params):
     return page_data
 
 
+def get_image_exts():
+    return [".jpg", ".jpeg", ".jp2", ".png", ".pnm", ".pbm", ".tif", ".tiff"]
+
+
+def dir_has_any_images(d):
+
+    exts = get_image_exts()
+    for name in os.listdir(d):
+
+        if os.path.isfile(os.path.join(d, name)):
+            _, ext = os.path.splitext(name)
+
+            if ext.lower() in exts:
+                return True
+
+    return False
+
+
+def skip_interposed_directory(d):
+
+    have_img_files = dir_has_any_images(d)
+
+    subdirs = [name for name in os.listdir(d) if os.path.isdir(os.path.join(d, name))]
+
+    if len(subdirs) != 1 or have_img_files:
+        return d
+
+    return os.path.join(d, subdirs[0])
+
+
 def main():
 
     parser = argparse.ArgumentParser(description='')
@@ -514,10 +544,14 @@ def main():
 
     os.makedirs(tempdir, exist_ok=True)
 
+    # some folders, e.g. when extracted from ZIPs or TARs have a single directory
+    # rather than making it complicated for the called, spot this and go inside
+    args.in_dir = skip_interposed_directory(args.in_dir)
+
     if args.out_djvu is None:
         args.out_djvu = args.in_dir + ".djvu"
 
-    files = get_dir_list_with_exts(args.in_dir, [".jpg", ".jpeg", ".jp2", ".png", ".pnm", ".pbm", ".tif", ".tiff"])
+    files = get_dir_list_with_exts(args.in_dir, get_image_exts())
 
     if args.djvu_size:
         # in bytes

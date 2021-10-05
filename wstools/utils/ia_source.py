@@ -74,7 +74,7 @@ class IaSource(utils.source.Source):
 
     def get_file_url(self):
 
-        logging.debug("Getting IA source URL for ID {}".format(self.id))
+        logging.debug(f"Getting IA source URL for ID {self.id}")
 
         filename = self._get_best_file()
 
@@ -85,6 +85,28 @@ class IaSource(utils.source.Source):
             url = None
 
         return url
+
+    def has_djvu(self):
+
+        djvu_fileinfo = self._get_files_with_format("DjVu")
+        return djvu_fileinfo is not None
+
+    def get_jp2_zip(self):
+
+        jp2_zip_fileinfo = self._get_files_with_format("Single Page Processed JP2 ZIP")
+
+        if not jp2_zip_fileinfo:
+            return None
+
+        jp2_zip_name = jp2_zip_fileinfo[0].attrib['name']
+        jp2_zip_size = int(jp2_zip_fileinfo[0].find('size').text)
+
+        url = f'https://archive.org/download/{self.id}/{jp2_zip_name}'
+
+        logging.debug(f'Downloading JP2 zip: {jp2_zip_name}')
+        logging.debug(f' Size: {jp2_zip_size // (1024 * 1024)}MB')
+
+        return utils.source.get_from_url(url, name=jp2_zip_name)
 
     def _get_scandata(self):
 

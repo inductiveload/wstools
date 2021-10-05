@@ -10,8 +10,12 @@ import os
 import dotenv
 import re
 import itertools
+import io
+import urllib.parse
+import time
 
 import utils.pagelist
+import utils.source
 import utils.ia_source
 import utils.ht_source
 import utils.ht_api
@@ -19,14 +23,19 @@ import utils.commonsutils
 import utils.string_utils
 import utils.ia_upload
 import utils.phab_tasks
+import utils.update_bar
 
 import requests
-import requests_cache
+# import requests_cache
 
 
 import pywikibot
 import pywikibot.proofreadpage
 import mwparserfromhell
+
+# for Toolforge uploading
+import paramiko
+import scp
 
 import subprocess
 
@@ -40,6 +49,210 @@ WS_LOCAL = {
         }
     }
 }
+
+
+def image_exists_as_image(filepage):
+    try:
+        filepage.get_file_url()
+        has_image_info = filepage.exists()
+    except pywikibot.exceptions.PageRelatedError:
+        has_image_info = False
+
+    return has_image_info
+
+
+def handle_upload_warning(warnings):
+
+    logging.error(warnings)
+
+    for w in warnings:
+        if w.code not in ['was-deleted', 'exists-normalized', 'page-exists']:
+            return False
+
+    return True
+
+
+class UploadHandler():
+
+    def upload(self, name, file, desc):
+        raise NotImplementedError
+
+
+class StandardWikiUpload(UploadHandler):
+
+    def __init__(self, site):
+        self.site = site
+        self.write_filepage_on_failure = True
+        self.simulate_stash_failure = False
+        self.chunk_size = 1024 * 1024
+
+    def exists(self, name):
+
+        fp = pywikibot.FilePage(self.site, "File:" + name)
+        return fp.exists()
+
+    def upload(self, name, file_url, desc):
+
+        filepage = pywikibot.FilePage(self.site, "File:" + name)
+
+        try:
+            if self.simulate_stash_failure:
+                logging.debug(f"Simulating stash failure at {self.site}")
+                raise pywikibot.exceptions.APIError('stashfailed', '')
+
+            if file_url.startswith("http"):
+                self.site.upload(filepage, source_url=file_url,
+                                 comment=desc,
+                                 report_success=False,
+                                 ignore_warnings=handle_upload_warning)
+            else:
+                self.site.upload(filepage, source_filename=file_url,
+                                 comment=desc, report_success=False,
+                                 ignore_warnings=handle_upload_warning,
+                                 chunk_size=self.chunk_size,
+                                 asynchronous=True)
+        except pywikibot.exceptions.Error as e:
+
+            logging.info(f'WMF upload failed with {e}')
+
+            if self.write_filepage_on_failure:
+                logging.debug("Writing description without file present")
+
+                filepage.put(
+                    desc,
+                    summary="File description for failed upload, pending server-side upload.",
+                    ignore_warnings=handle_write_filepage_warning,
+                )
+            return False
+        return True
+
+
+class UploadToIA(UploadHandler):
+
+    def __init__(self):
+        self.ssu_url = None
+
+    def upload(self, name, file_url, desc, file_metadata):
+        self.ssu_url = None
+        logging.debug(f'Attempting IA upload of {file_url}')
+        ia_id, ia_file = utils.ia_upload.upload_file(
+            file_url,
+            name,
+            file_metadata.get('title'),
+            volume=file_metadata.get('volume'),
+            author=file_metadata.get('author'),
+            editor=file_metadata.get('editor'),
+            date=file_metadata.get('year'),
+            src_url=None
+        )
+
+        self.ssu_url = f'https://archive.org/download/{ia_id}/{ia_file}'
+        logging.debug(f'Uploading to IA complete: {ia_id}')
+
+
+class UploadToSshHost(UploadHandler):
+
+    def __init__(self, ssh, path):
+        self.ssh = ssh
+        self.path = path
+
+    def upload(self, name, file_url, desc):
+        logging.debug('Uploading to host:' + self.ssh._remote_hostname)
+
+        tail_root, _ = os.path.splitext(name)
+        dest_file = os.path.join(self.path, name)
+        dest_desc_file = os.path.join(self.path, tail_root + '.txt')
+
+        with utils.update_bar.ParamikoTqdmWrapper(
+                unit='B', unit_scale=True) as pbar:
+
+            with scp.SCPClient(
+                    self.ssh.get_transport(), progress=pbar.view_bar) as scp_client:
+
+                if file_url.startswith('http'):
+                    dl_buffer = utils.source.get_from_url(file_url)
+                    scp_client.putfo(dl_buffer, dest_file)
+                else:
+                    scp_client.put(file_url, dest_file)
+
+                desc_fo = io.BytesIO(desc.encode('utf8'))
+                scp_client.putfo(desc_fo, dest_desc_file)
+
+        return [
+            dest_file,
+            dest_desc_file
+        ]
+
+
+def wait_for_file_to_exist(filepage, max_delay, delay_step=5):
+
+    delay = 0
+    while delay <= max_delay:
+        if image_exists_as_image(filepage):
+            return True
+        time.sleep(delay)
+        delay += delay_step
+
+    return False
+
+
+class UploadViaToolforgeSsh(UploadHandler):
+
+    def __init__(self, site):
+        self.site = site
+
+        self.host = "login.tools.wmflabs.org"
+        self.path = os.getenv('TOOLFORGE_STORAGE_PATH')
+        self.username = os.getenv('TOOLFORGE_SSH_USERNAME')
+        self.keyfile = os.getenv('TOOLFORGE_SSH_KEYFILE')
+        self.external_url = os.getenv('TOOLFORGE_FILE_STORE_URL')
+
+    def upload(self, name, file_url, desc):
+        logging.debug(f'Uploading via Toolforge to {self.site}')
+
+        ssh = paramiko.SSHClient()
+        # hack, but Paramiko doesn't provide this
+        ssh._remote_hostname = self.host
+        ssh.load_system_host_keys()
+        ssh.connect(self.host, username=self.username, key_filename=self.keyfile)
+
+        ssh_uploader = UploadToSshHost(ssh, self.path)
+        upped_files = ssh_uploader.upload(name, file_url, desc)
+
+        ext_url = self.external_url + urllib.parse.quote(name)
+
+        filepage = pywikibot.FilePage(self.site, 'File:' + name)
+
+        #  now that the file is uploaded to TF, copy-upload to the site
+        try:
+            logging.debug(f'Copy-uploading: {ext_url} -> {self.site}')
+            self.site.upload(filepage, source_url=ext_url,
+                             comment=desc,
+                             report_success=False,
+                             ignore_warnings=handle_upload_warning)
+        except pywikibot.exceptions.APIError as e:
+            # the upload _seems_ to have failed, but it could have worked and
+            # just timed us out. So poll for a bit.
+            print(e.__dict__)
+            if e.code == '':
+                if not wait_for_file_to_exist(filepage, 60):
+                    # file never appeared :-s
+                    raise
+            else:
+                # some other error happened
+                raise
+
+        # now delete the files (if exception above, leave them in place)
+        with ssh.open_sftp() as sftp:
+            for file in upped_files:
+                logging.debug(f'Deleting: {file}')
+
+                try:
+                    sftp.remove(file)
+                except FileNotFoundError:
+                    # should not happen, but maybe someone SSHed in and messed
+                    # with it or something
+                    pass
 
 
 def parse_header_row(hr):
@@ -66,139 +279,240 @@ def combine_authors_linked(authors):
     return utils.string_utils.combine_list(links)
 
 
-def get_value(r, keys):
-
-    for k in keys:
-
-        if k in r and r[k] is not None and r[k]:
-            return r[k]
-
-    return None
-
-
-def is_trueish(v, default=False):
-
-    if not v:
-        return default
-
-    return v.lower() in ['y', 'yes', 'true', '1']
-
-
-def make_index_content(r, typ, phab_id=None):
-
-    publisher = r['publisher'] if 'publisher' in r else ""
-    progress = "X"
-    vlist = r['vollist'] if 'vollist' in r else ""
-    city = r['city'] if 'city' in r else ""
-
-    title_val = get_value(r, ['mainspace', 'title'])
-
-    title = "''[[{}]]''".format(title_val)
-
-    volume = ''
-    if 'volume' in r and r['volume']:
-
-        if 'subpage' in r and r['subpage']:
-            subpage = r['subpage']
-        else:
-            subpage = "Volume " + r['volume']
-
-        subpage_disp = r['subpage_disp'] if 'subpage_disp' in r else subpage
-
-        volume = "[[{}/{}|{}]]".format(title_val, subpage, subpage_disp)
-
-        if 'vol_detail' in r and r['vol_detail']:
-            volume += " ({})".format(r['vol_detail'])
-
-    year = r['year'] if 'year' in r else (r['date'] if 'date' in r else "")
-
-    pages = r['pagelist']
-
-    titlewords = title_val.split()
+def get_sortkey(s):
+    titlewords = s.split()
     if titlewords[0].lower() in ["the", "a", "an"]:
         key = " ".join(titlewords[1:]) + ", " + titlewords[0]
     else:
         key = ""
+    return key
+
+
+FIELD_MAP = {
+    'en': {
+        'params': {
+            'type': 'Type',
+            'title': 'Title',
+            'lang': 'Language',
+            'volume': 'Volume',
+            'author': 'Author',
+            'translator': 'Translator',
+            'editor': 'Editor',
+            'illustrator': 'Illustrator',
+            'school': 'School',
+            'publisher': 'Publisher',
+            'printer': 'None',
+            'city': 'Address',
+            'year': 'Year',
+            'key': 'Key',
+            'isbn': 'ISBN',
+            'oclc': 'OCLC',
+            'lccn': 'LCCN',
+            'bnf_ark': 'BNF_ARK',
+            'arc': 'ARC',
+            'source': 'Source',
+            'image': 'Image',
+            'progress': 'Progress',
+            'pages': 'Pages',
+            'volumes': 'Volumes',
+            'remarks': 'Remarks',
+            'valid_date': 'Validation date',
+            'transclusion': 'Transclusion',
+            'wikidata': 'Wikidata',
+            'css': 'Css',
+            'header': 'Header',
+            'footer': 'Footer',
+            'width': 'Width',
+        },
+        'default_progress': 'X',
+        'default_transclusion': 'no',
+        'default_type': 'book',
+        'field_order': [
+            'type', 'title', 'lang', 'volume', 'author', 'editor',
+            'translator', 'illustrator', 'publisher',  # 'printer',
+            'city', 'year', 'key', 'isbn', 'oclc', 'lccn', 'bnk_ark',
+            'arc', 'source', 'image',
+            'progress', 'transclusion', 'valid_date', 'pages',
+            'remarks', 'wikidata', 'volumes',
+            'width', 'css', 'header', 'footer'
+        ]
+    },
+    'es': {
+        'params': {
+            'title': 'Titulo',
+            'subtitle': 'Subtitulo',
+            'lang': 'Idioma',
+            'volume': 'Volumen',
+            'author': 'Autor',
+            'translator': 'Traductor',
+            'editor': 'Editor',
+            'illustrator': 'Ilustrador',
+            'publisher': 'Editorial',
+            'printer': 'Printer',
+            'city': 'Lugar',
+            'file_source': 'Fuente',
+            'year': 'Ano',
+            'key': 'Key',
+            'image': 'Imagen',
+            'progress': 'Progreso',
+            'pages': 'Paginas',
+            'volumes': 'Serie',
+            'remarks': 'Notas',
+            'wikidata': 'Wikidata',
+            'country': 'derechos',
+            'header': 'Header',
+            'footer': 'Footer',
+        },
+        'default_progress': 'C',
+        'field_order': [
+            'title', 'subtitle', 'lang', 'volume', 'author', 'editor',
+            'translator', 'publisher', 'printer', 'city', 'illustrator',
+            'year', 'country', 'file_source', 'image',
+            'progress', 'pages', 'remarks', 'wikidata', 'volumes',
+            'header', 'footer'
+        ]
+    },
+}
+
+
+def make_index_content(r, typ, phab_id=None, lang='en'):
+
+    vlist = r.get('vollist') or ""
+
+    title_val = r.get('mainspace') or r.get('title')
+    title = f"''[[{title_val}]]''"
+
+    subtitle = r.get('subtitle') or ""
+
+    volume = ''
+    if r.get('volume'):
+
+        subpage = r.get('subpage')
+        if not subpage:
+            subpage = "Volume " + r.get('volume')
+
+        subpage_disp = r.get('subpage_disp') or subpage
+
+        volume = f'[[{title_val}/{subpage}|{subpage_disp}]]'
+
+        if r.get('vol_detail'):
+            volume += " ({})".format(r.get('vol_detail'))
+
+    year = r.get('year') or (r.get('date') or "")
+    key = get_sortkey(title_val)
 
     remarks = ''
     if phab_id:
         remarks = f'Pending server-side upload: [[phab:T{phab_id}]]'
 
-    s = """{{{{:MediaWiki:Proofreadpage_index_template
-|Type=book
-|Title={title}
-|Language={language}
-|Volume={volume}
-|Author={author}
-|Translator={translator}
-|Editor={editor}
-|Illustrator=
-|School=
-|Publisher={publisher}
-|Address={city}
-|Year={year}
-|Key={key}
-|ISBN=
-|OCLC={oclc}
-|LCCN=
-|BNF_ARK=
-|ARC=
-|Source={source}
-|Image={pg_img}
-|Progress={progress}
-|Pages={pages}
-|Volumes={volume_list}
-|Remarks={remarks}
-|Width=
-|Css=
-|Header=
-|Footer=
-}}}}""".format(
-        title=title,
-        language=r['language'],
-        volume=volume,
-        author=r['ws_author'],
-        editor=r['ws_editor'],
-        translator=r['ws_translator'],
-        publisher=publisher,
-        city=city,
-        year=year,
-        source=typ,
-        pg_img=r['img_pg'] if 'img_pg' in r else "",
-        progress=progress,
-        pages=pages,
-        volume_list=vlist,
-        key=key,
-        oclc=r['oclc'] if 'oclc' in r else "",
-        remarks=remarks
+    fmap = FIELD_MAP[lang]
+
+    template = mwparserfromhell.nodes.Template(
+        ":MediaWiki:Proofreadpage_index_template"
     )
 
-    return s
+    for field in fmap['field_order']:
 
+        value = None
+        if field == 'type':
+            value = 'book'
+        elif field == 'source':
+            value = typ
+        elif field == 'lang':
+            value = r.get('language') or ""
+        elif field == 'title':
+            value = title
+        elif field == 'subtitle':
+            value = subtitle
+        elif field == 'volume':
+            value = volume
+        elif field == 'author':
+            value = r.get('ws_author') or ""
+        elif field == 'editor':
+            value = r.get('ws_editor') or ""
+        elif field == 'translator':
+            value = r.get('ws_translator') or ""
+        elif field == 'illustrator':
+            value = r.get('ws_illustrator') or ""
+        elif field == 'publisher':
+            value = r.get('publisher') or ""
+        elif field == 'printer':
+            value = r.get('printer') or ""
+        elif field == 'year':
+            value = year
+        elif field == 'city':
+            value = r.get('city') or ""
+        elif field == 'country':
+            value = r.get('country') or ""
+        elif field == 'file_source':
+            value = r.get('file_source')
+        elif field == 'image':
+            value = r.get('img_pg') or ""
+        elif field == 'progress':
+            value = r.get('progress') or fmap['default_progress']
+        elif field == 'pages':
+            value = r.get('pagelist') or ""
+        elif field == 'remarks':
+            value = remarks
+        elif field == 'wikidata':
+            value = r.get('wikidata') or ""
+        elif field == 'volumes':
+            value = vlist
+        elif field == 'transclusion':
+            value = r.get('transclusion') or fmap['default_transclusion']
+        elif field == 'valid_date':
+            value = r.get('valid_date') or ""
+        elif field == 'footer':
+            value = r.get('footer') or ""
+        elif field == 'css':
+            value = r.get('css') or ""
+        elif field == 'header':
+            value = r.get('header') or ""
+        elif field == 'footer':
+            value = r.get('footer') or ""
 
-def has(r, key):
-    return (key in r) and r[key]
+        elif field == 'oclc':
+            value = r.get('OCLC') or ""
+        elif field == 'issn':
+            value = r.get('ISSN') or ""
+        elif field == 'lccn':
+            value = r.get('LCCN') or ""
+        elif field == 'bnf_ark':
+            value = r.get('BNF_ARK') or ""
+        elif field == 'arc':
+            value = r.get('ARC') or ""
+        elif field == 'key':
+            value = key
+
+        if value is not None:
+            param = fmap['params'][field]
+            template.add(param, value.strip() + '\n')
+
+    return re.sub(r'\n\n+', '\n', str(template))
 
 
 def make_description(r, typ):
 
-    lic = r['license'].replace("—", "-").replace("–", "-")
+    lic = r.get('license').replace("—", "-").replace("–", "-")
+
+    if lic.lower() == "pd-old-expired-auto":
+        lic == "PD-old-auto-expired"
 
     if lic == "PD-old-auto-expired" and 'deathyear' in r:
-        lic += "|deathyear=" + r['deathyear']
+        lic += "|deathyear=" + r.get('deathyear')
 
     top_content = ''
-    local = 'to_ws' in r and r['to_ws'].lower() not in ['n', 'no']
+    local = r.get_bool('to_ws', False)
 
     if local:
         wsl = WS_LOCAL['en']
         dnmtc = mwparserfromhell.nodes.template.Template(wsl['no_commons']['title'])
 
-        if 'no_commons_until' in r and r['no_commons_until']:
-            dnmtc.add(wsl['no_commons']['until'], r['no_commons_until'])
+        if r.get('no_commons_until'):
+            dnmtc.add(wsl['no_commons']['until'], r.get('no_commons_until'))
 
-        if 'no_commons_reason' in r and r['no_commons_reason']:
-            dnmtc.add(wsl['no_commons']['reason'], r['no_commons_reason'])
+        if r.get('no_commons_reason'):
+            dnmtc.add(wsl['no_commons']['reason'], r.get('no_commons_reason'))
         top_content = str(dnmtc)
 
     if local:
@@ -206,45 +520,45 @@ def make_description(r, typ):
     else:
         license = f'{{{{PD-scan|{lic}}}}}'
 
-    if r['source'] == "ia":
-        source = "{{{{IA|{iaid}}}}}".format(iaid=r['id'])
-    elif r['source'] == 'ht':
-        source = "{{{{HathiTrust|{htid}|book}}}}".format(htid=r['id'])
-    elif r['source'] == "url":
-        source = r['id']
+    if r.get('source') == "ia":
+        source = "{{{{IA|{iaid}}}}}".format(iaid=r.get('id'))
+    elif r.get('source') == 'ht':
+        source = "{{{{HathiTrust|{htid}|book}}}}".format(htid=r.get('id'))
+    elif r.get('source') == "url":
+        source = r.get('id')
     else:
-        raise("Unknown source: {}".format(r['source']))
+        raise("Unknown source: {}".format(r.get('source')))
 
-    langname = utils.commonsutils.lang_cat_name(r['language'])
+    langname = utils.commonsutils.lang_cat_name(r.get('language'))
 
     cats = []
 
     if not local:
         if typ == "djvu":
-            cats.append("DjVu files in {lang}".format(lang=langname))
+            cats.append(f"DjVu files in {langname}")
         else:
-            cats.append("PDF files in {lang}".format(lang=langname))
+            cats.append(f"PDF files in {langname}")
 
-    if 'commonscats' in r and r['commonscats']:
-        cats += r['commonscats'].split("/")
+    if r.get('commonscats'):
+        cats += r.get('commonscats').split("/")
 
-    date = r['date'] if has(r, 'date') else ""
-    year = r['year'] if has(r, 'year') else date
+    date = r.get('date') or ""
+    year = r.get('year') or date
 
     if not date and year:
         date = year
 
-    cats = "\n".join(["[[Category:{}]]".format(x) for x in cats])
+    cats = "\n".join([f"[[Category:{x}]]" for x in cats])
 
-    if 'vol_disp' in r and r['vol_disp']:
-        volume = r['vol_disp']
-    elif 'volume' in r and r['volume']:
-        volume = r['volume']
+    if r.get('vol_disp'):
+        volume = r.get('vol_disp')
+    elif r.get('volume'):
+        volume = r.get('volume')
     else:
         volume = ""
 
-    if 'vol_detail' in r and r['vol_detail']:
-        volume += " ({})".format(r['vol_detail'])
+    if r.get('vol_detail'):
+        volume += f' ({r.get("vol_detail")})'
 
     s = """
 == {{{{int:filedesc}}}} ==
@@ -274,6 +588,8 @@ def make_description(r, typ):
 | Homecat      =
 | Wikidata     =
 | OCLC         = {oclc}
+| ISBN         = {isbn}
+| LCCN         = {lccn}
 }}}}
 
 == {{{{int:license-header}}}} ==
@@ -283,21 +599,23 @@ def make_description(r, typ):
 """.format(
         license=license,
         top_content=top_content,
-        author=r['commons_author'],
-        editor=r['commons_editor'],
-        translator=r['commons_translator'],
-        title=r['title'] if 'title' in r else "",
-        subtitle=r['subtitle'] if 'subtitle' in r else "",
+        author=r.get('commons_author') or "",
+        editor=r.get('commons_editor') or "",
+        translator=r.get('commons_translator') or "",
+        title=r.get('title') or "",
+        subtitle=r.get('subtitle') or "",
         volume=volume,
-        publisher=r['publisher'] if 'publisher' in r else "",
-        printer=r['printer'] if 'printer' in r else "",
-        city=r['city'] if 'city' in r else "",
+        publisher=r.get('publisher') or "",
+        printer=r.get('printer') or "",
+        city=r.get('city') or "",
         date=date,
-        language=r['language'],
+        language=r.get('language'),
         source=source,
-        img_page=r['img_pg'] if 'img_pg' in r else "",
+        img_page=r.get('img_pg') or "",
         cats=cats,
-        oclc=r['oclc'] if 'oclc' in r else "",
+        oclc=r.get('oclc') or "",
+        isbn=r.get('isbn') or "",
+        lccn=r.get('lccn') or "",
         )
 
     return s
@@ -324,23 +642,33 @@ def get_wd_site_info(site, r, key):
     """
     Note, this assumes the parts are ALL wikidata IDs or ALL author page names
     """
-    try:
-        parts = r[key].split("/")
-    except KeyError:
-        parts = []
+    parts = []
+    if r.get(key):
+        parts = r.get(key).split("/")
 
     if not parts or not re.match("Q[0-9]+", r[key]):
-        r['commons_' + key] = utils.string_utils.combine_list(parts)
-        r['ws_' + key] = combine_authors_linked(parts)
+        r.set('commons_' + key, utils.string_utils.combine_list(parts))
+        r.set('ws_' + key, combine_authors_linked(parts))
 
     else:
         repo = site.data_repository()
 
-        r['commons_' + key] = "\n".join(["{{{{creator|wikidata={}}}}}".format(a) for a in parts])
-        r['ws_' + key] = combine_linked([get_wd_site_author(repo, a) for a in parts])
+        r.set('commons_' + key, "\n".join(["{{{{creator|wikidata={}}}}}".format(a) for a in parts]))
+        r.set('ws_' + key, combine_linked([get_wd_site_author(repo, a) for a in parts]))
 
 
 def handle_warning(warnings):
+
+    logging.error(warnings)
+
+    for w in warnings:
+        if w.code not in ['was-deleted', 'exists-normalized']:
+            return False
+
+    return True
+
+
+def handle_write_filepage_warning(warnings):
 
     logging.error(warnings)
 
@@ -366,31 +694,30 @@ def handle_row(r, args):
 
     print(r)
 
-    if 'skip' in r and r['skip'] not in ["", "n", "no"]:
+    if r.get_bool('skip', False):
         logging.debug("Skipping row")
         return False
 
-    if r['source'] == "ia":
-        source = utils.ia_source.IaSource(r['id'])
-
-        if 'prefer_pdf' in r and r['prefer_pdf']:
+    if r.get('source') == "ia":
+        source = utils.ia_source.IaSource(r.get('id'))
+        if r.get('prefer_pdf'):
             source.prefer_pdf = True
-    elif r['source'] == "ht":
+    elif r.get('source') == "ht":
         dapi = utils.ht_api.DataAPI(proxies=args.proxy)
-        source = utils.ht_source.HathiSource(dapi, r['id'])
+        source = utils.ht_source.HathiSource(dapi, r.get('id'))
     else:
         source = None
 
     if source is not None:
         # normalise the ID
-        r['id'] = source.get_id()
+        r.set('id', source.get_id())
 
     file_url = None
 
-    if 'file' in r and r['file']:
+    if r.get('file'):
 
         # use local files if given
-        file_url = r['file']
+        file_url = r.get('file')
 
         if args.file_dir and not os.path.isabs(file_url):
             file_url = os.path.join(args.file_dir, file_url)
@@ -403,8 +730,8 @@ def handle_row(r, args):
         if args.file_dir:
             candidate_fns = itertools.product(
                 [
-                    utils.source.sanitise_id(r['id']),
-                    r['filename']
+                    utils.source.sanitise_id(r.get('id')),
+                    r.get('filename')
                 ],
                 ['.djvu', 'pdf']
             )
@@ -426,7 +753,7 @@ def handle_row(r, args):
     root, ext = os.path.splitext(file_url)
 
     dl_file = None
-    if 'dl' in r and r['dl'].startswith("y") and file_url.startswith("http"):
+    if r.get_bool('dl', False) and file_url.startswith("http"):
         # actually download the file
         logging.debug("Downloading file: {}".format(file_url))
 
@@ -441,8 +768,8 @@ def handle_row(r, args):
 
         file_url = dl_file
 
-    if dl_file and 'rem_pg' in r:
-        pages = split_any(r['rem_pg'], [" ", ","])
+    if dl_file and r.get('rem_pg'):
+        pages = split_any(r.get('rem_pg'), [" ", ","])
 
         print(pages)
         pages = [int(x) for x in pages]
@@ -454,7 +781,7 @@ def handle_row(r, args):
                 logging.debug("Deleting page {}".format(p))
                 subprocess.call(cmd)
 
-    if 'pagelist' not in r or not r['pagelist']:
+    if not r.get('pagelist'):
         if source is not None:
             try:
                 pagelist = source.get_pagelist()
@@ -467,35 +794,34 @@ def handle_row(r, args):
         else:
             pagelist = None
 
-        if "img_pg" not in r:
-            r["img_pg"] = ""
+        if not r.get("img_pg"):
+            r.set('img_pg', '')
 
         if pagelist is not None:
 
             page_offset = 0
-            if 'pg_offset' in r and r['pg_offset']:
-                page_offset = int(r['pg_offset'])
+            if r.get('pg_offset'):
+                page_offset = int(r.get('pg_offset'))
 
-            if not r["img_pg"] and pagelist.title_index is not None:
-                r["img_pg"] = str(pagelist.title_index - page_offset)
+            if not r.get('img_pg') and pagelist.title_index is not None:
+                r.set('img_pg', str(pagelist.title_index - page_offset))
 
-            r['pagelist'] = pagelist.to_pagelist_tag(page_offset)
+            r.set('pagelist', pagelist.to_pagelist_tag(page_offset))
         else:
-            r['pagelist'] = "<pagelist/>"
+            r.set('pagelist', '<pagelist/>')
 
-    # if 'oclc' not in r or not r['oclc']:
+    # if not r.get('oclc'):
+    #     r.set('oclc', source.get_oclc())
 
-    #     r['oclc'] = source.get_oclc()
+    if not r.get('year'):
+        r.set('year', r.get('date'))
 
-    if 'year' not in r:
-        r['year'] = r['date']
-
-    if not r['filename'].lower().endswith(ext.lower()):
-        r['filename'] += ext
+    if not r.get('filename').lower().endswith(ext.lower()):
+        r.set('filename', r.get('filename') + ext)
 
     ws_site = pywikibot.Site(args.ws_language, "wikisource")
 
-    upload_to_ws = 'to_ws' in r and is_trueish(r['to_ws'], False)
+    upload_to_ws = r.get_bool('to_ws', False)
 
     if upload_to_ws:
         upload_site = ws_site
@@ -511,27 +837,36 @@ def handle_row(r, args):
     print(desc)
 
     # filter out nasties in the filename
-    cms_fn = r['filename'].replace("—", "-").replace("–", "-")
+    cms_fn = r.get('filename').replace("—", "-").replace("–", "-")
     filepage = pywikibot.FilePage(upload_site, "File:" + cms_fn)
 
     logging.debug(filepage)
 
     do_upload = True
 
-    if filepage.exists():
+    try:
+        filepage.get_file_url()
+        has_image_info = filepage.exists()
+    except pywikibot.exceptions.PageRelatedError:
+        has_image_info = False
+
+    if has_image_info and not args.skip_upload:
         logging.warning("File page exists: {}".format(cms_fn))
 
         if args.exist_action == 'skip':
-            logging.info("Skipping file")
-            return False
+            logging.info("Skipping file upload")
+            do_upload = False
 
         if args.exist_action == 'update':
             filepage.text = desc
-
+            summary = "Updating description from batch upload data"
             if not args.dry_run:
-                filepage.save("Updating description from batch upload data")
+                filepage.save(
+                    summary=summary,
+                    ignore_warnings=handle_write_filepage_warning
+                )
             else:
-                logging.info("Dry run: skipped description update")
+                logging.info(f"Dry run: skipped description update, would have saved with message '{summary}'")
 
             do_upload = False
 
@@ -540,95 +875,126 @@ def handle_row(r, args):
 
         logging.debug("Uploading {} -> {}".format(file_url, filepage))
 
+        file_size = None
+        if os.path.isfile(file_url):
+            file_size = os.path.getsize(file_url)
+            logging.debug(f'File size: {file_size // (1024 * 1024)}MB')
+
         if args.dry_run:
-            logging.info("Dry run: skipped file upload to {}")
+            logging.info(f"Dry run: skipped file upload to File{cms_fn}")
         else:
-            try:
-                raise pywikibot.exceptions.APIError('stashfailed', '')
-                if file_url.startswith("http"):
-                    upload_site.upload(filepage, source_url=file_url,
-                                       comment=desc,
-                                       report_success=False,
-                                       ignore_warnings=handle_warning)
-                else:
-                    upload_site.upload(filepage, source_filename=file_url,
-                                       comment=desc, report_success=False,
-                                       ignore_warnings=handle_warning,
-                                       chunk_size=args.chunk_size,
-                                       asynchronous=True)
-            except pywikibot.exceptions.APIError as e:
+            wiki_uploader = StandardWikiUpload(upload_site)
+            wiki_uploader.chunk_size = args.chunk_size
+            wiki_uploader.simulate_stash_failure = args.simulate_stash_failure
+            wiki_uploader.write_filepage_on_failure = True
 
-                if e.code in ['uploadstash-file-not-found', 'stashfailed']:
+            uploaded_ok = wiki_uploader.upload(cms_fn, file_url, desc)
 
-                    logging.info(
-                            f'WMF upload failed with {e.code}: uploading to IA')
+            if not uploaded_ok:
+                logging.debug('Normal Wiki upload failed')
+                ssu_url = None
+                if args.internet_archive:
+                    tf_upload = UploadViaToolforgeSsh(upload_site)
+                    tf_upload.upload(cms_fn, file_url, desc)
 
-                    ssu_url = None
-                    ssu_size = None
-                    if args.internet_archive:
-                        logging.debug(f'Attempting IA upload of {file_url}')
-                        ia_id, ia_file = utils.ia_upload.upload_file(
-                            file_url,
-                            cms_fn,
-                            r['title'],
-                            author=r['author'] if 'author' in r else None,
-                            editor=r['editor'] if 'editor' in r else None,
-                            date=r['year'],
-                            src_url=None
-                        )
+                if args.phab_ssu:
 
-                        if os.path.isfile(file_url):
-                            ssu_size = os.path.getsize(file_url)
+                    projs = []
+                    extra_proj = os.getenv('PHAB_SSU_EXTRA_PROJECTS')
+                    if extra_proj:
+                        projs.append(extra_proj)
 
-                        ssu_url = f'https://archive.org/download/{ia_id}/{ia_file}'
+                    parent_task = os.getenv('PHAB_PARENT_TASK')
 
-                    if args.phab_ssu:
+                    if not ssu_url:
+                        raise RuntimeError("No URL for server-side-upload!")
 
-                        projs = []
-                        extra_proj = os.getenv('PHAB_SSU_EXTRA_PROJECTS')
-                        if extra_proj:
-                            projs.append(extra_proj)
+                    phab_res = utils.phab_tasks.request_server_side_upload(
+                        ssu_url,
+                        wiki=args.ws_language + 'wikisource',
+                        filename=cms_fn,
+                        username=os.getenv('PHAB_USERNAME'),
+                        file_desc=desc,
+                        t278104=True,
+                        extra_projs=projs,
+                        parent_task=parent_task,
+                        filesize=file_size,
+                        extra=None)
 
-                        parent_task = os.getenv('PAHB_PARENT_TASK')
+                    phab_id = phab_res['result']['object']['id']
 
-                        if not ssu_url:
-                            raise RuntimeError("No URL for server-side-upload!")
-
-                        phab_res = utils.phab_tasks.request_server_side_upload(
-                            ssu_url,
-                            wiki=args.ws_language + 'wikisource',
-                            filename=cms_fn,
-                            username=os.getenv('PHAB_USERNAME'),
-                            file_desc=desc,
-                            t278104=True,
-                            extra_projs=projs,
-                            parent_task=parent_task,
-                            filesize=ssu_size,
-                            extra=None)
-
-                        phab_id = phab_res['result']['object']['id']
-
-                        logging.info(f'Raised phab ticket T{phab_id}')
-                else:
-                    # something else went wrong
-                    raise(e)
+                    logging.info(f'Raised phab ticket T{phab_id}')
 
     indexpage = pywikibot.proofreadpage.IndexPage(ws_site, title='Index:' + cms_fn)
 
-    index_content = make_index_content(r, filetype, phab_id=phab_id)
-
+    index_content = make_index_content(r, filetype, phab_id=phab_id,
+                                       lang=args.ws_language)
     print(index_content)
 
     summary = "Creating index page to match file"
 
-    if not args.skip_index:
-
+    if args.skip_index:
+        logging.debug(f'Skipping index creation for: {indexpage}')
+    elif indexpage.exists() and args.exist_action == 'skip':
+        logging.debug(f'Skipping index creation for existing page: {indexpage}')
+    else:
+        indexpage.text = index_content
         if not args.dry_run:
-            indexpage.put(index_content, summary=summary, botflag=args.bot_flag)
+            indexpage.save(summary=summary, botflag=args.bot_flag)
         else:
-            logging.info("Dry run: skipped index update")
+            logging.info(f"Dry run: skipped index update, would have saved with summary '{summary}'")
 
     return True
+
+
+def get_rows(args):
+    rows = None
+    if args:
+        rows = []
+        for r in args:
+            m = re.match(r'(\d+)-(\d+)', r)
+
+            if m:
+                rows += range(int(m.group(1)), int(m.group(2)))
+            else:
+                rows.append(int(r))
+
+    return rows
+
+
+class DataRow():
+
+    def __init__(self, col_map, row):
+
+        mapped_row = {}
+
+        for col in col_map:
+            value = row[col_map[col]].strip()
+
+            # data normalisation
+            if col.lower() == 'source':
+                value = value.lower()
+
+            mapped_row[col.lower()] = value
+        self.r = mapped_row
+
+    def get(self, key):
+
+        if key not in self.r:
+            return None
+        return self.r[key].strip()
+
+    def set(self, key, value):
+        self.r[key] = value
+
+    def get_bool(self, key, default):
+
+        v = self.get(key)
+
+        if not v:
+            return default
+
+        return v[0].lower() in ['y', 't', '1']
 
 
 def main():
@@ -638,7 +1004,7 @@ def main():
                         help='show debugging information')
     parser.add_argument('-f', '--data_file', required=True,
                         help='The data file')
-    parser.add_argument('-r', '--rows', type=int, nargs="+",
+    parser.add_argument('-r', '--rows', nargs="+",
                         help='Rows to process')
     parser.add_argument('-n', '--dry-run', action='store_true',
                         help='Do a dry run')
@@ -649,7 +1015,7 @@ def main():
     parser.add_argument('-N', '--number', type=int,
                         help='Number `of (unskipped) rows to upload')
     parser.add_argument('-c', '--chunk-size', default='10M',
-                        help='Upload chunk size (MB); 0 to not use chunks')
+                        help='Upload chunk size (bytes); 0 to not use chunks, suffix M for megabytes')
     parser.add_argument('-m', '--max-lag', default=5, type=float,
                         help='Maxlag parameter default=5')
     parser.add_argument('-T', '--throttle', type=float, default=1,
@@ -668,6 +1034,9 @@ def main():
                         help='File a Phabricator server-side upload request')
     parser.add_argument('-L', '--ws-language', default='en',
                         help='The Wikisource language subdomain')
+    parser.add_argument('-X', '--simulate-stash-failure', action='store_true',
+                        help='Simulate an immediate stash failure in Mediawiki'
+                        ' (skip right to IA upload if configured with -J)')
 
     args = parser.parse_args()
 
@@ -730,6 +1099,8 @@ def main():
 
     pywikibot.config.socket_timeout = (10, 200)
 
+    rows = get_rows(args.rows)
+
     uploaded_count = 0
     row_idx = 1
 
@@ -737,14 +1108,15 @@ def main():
 
         row_idx += 1
 
-        if args.rows is not None and row_idx not in args.rows:
+        if rows is not None and row_idx not in rows:
             logging.debug("Skip row {}".format(row_idx))
             continue
 
-        mapped_row = {}
+        mapped_row = DataRow(col_map, row)
 
-        for col in col_map:
-            mapped_row[col.lower()] = row[col_map[col]].strip()
+        # set defaults
+        if not mapped_row.get('language'):
+            mapped_row.set('language', 'en')
 
         handled = handle_row(mapped_row, args)
 

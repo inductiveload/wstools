@@ -6,4 +6,5 @@ def lang_cat_name(code):
         'en': "English",
         'la': "Latin",
         'de': "German",
+        'es': "Spanish",
     }[code]

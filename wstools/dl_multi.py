@@ -12,25 +12,20 @@ import dotenv
 
 import subprocess
 
-import dl_hathi
+import dl_book
 
 import utils.ht_source as HTS
 
 
-class DlDef():
+def get_conversion_opts(dl):
 
-    def __init__(self, src, id, filename):
+    if dl.src == 'ht':
+        return ["-b", ".png"]
 
-        self.id = id
-        self.filename = filename
-        self.src = src
+    if dl.src == 'ia':
+        return []
 
-    def get_opts(self):
-
-        if self.src == 'ht':
-            return ["-b", ".png"]
-
-        raise NotImplementedError
+    raise NotImplementedError
 
 
 def dls_from_text(infile):
@@ -57,7 +52,7 @@ def dls_from_text(infile):
             print(line)
             raise
 
-        dls.append(DlDef('ht', htid.strip(), fn.strip()))
+        dls.append(dl_book.DlDef('ht', htid.strip(), fn.strip()))
 
     return dls
 
@@ -105,7 +100,7 @@ def dls_from_xlsx(filename, rows):
             logging.debug(f'Skipping DL for row {row_idx}')
             continue
 
-        htid = row[col_map['id']].strip()
+        srcid = row[col_map['id']].strip()
 
         if 'file' in mapped_row:
             filename = mapped_row['file']
@@ -117,12 +112,9 @@ def dls_from_xlsx(filename, rows):
         source = mapped_row['source']
 
         if source == 'ht':
-            htid = HTS.normalise_id(htid)
+            srcid = HTS.normalise_id(srcid)
 
-        dls.append(DlDef(source, htid, filename))
-
-    logging.debug(dls)
-
+        dls.append(dl_book.DlDef(source, srcid, filename))
     return dls
 
 
@@ -139,6 +131,14 @@ def main():
                         help='Use a proxy')
     parser.add_argument('-r', '--rows', nargs='+',
                         help='Rows (only for XLSX)')
+    parser.add_argument('-S', '--size', type=int,
+                        help='Target DJVU size')
+    parser.add_argument('-s', '--skip-existing', action='store_true',
+                        help='Skip files we already have a DJVU for')
+    parser.add_argument('-T', '--threads', type=int,
+                        help='Number of threads to use for conversion')
+    parser.add_argument('-x', '--sources', nargs='+',
+                        help='Sources to use (e.g. IA, HT) Default: all')
 
     args = parser.parse_args()
 
@@ -154,9 +154,9 @@ def main():
 
     dls = []
 
+    rows = None
     if args.rows:
         rows = []
-
         for r in args.rows:
             m = re.match(r'(\d+)-(\d+)', r)
 
@@ -174,51 +174,78 @@ def main():
                 dls = dls_from_text(infile)
 
     for dl in dls:
-        print(f'{dl.id} → {dl.filename}')
+        logging.debug(f'{dl.id} → {dl.filename}')
 
     basedir = os.getenv('WSTOOLS_OUTDIR')
     tmp_dir = "tmp"
+    keep_temp = False
     skip_existing = True
-    threads = int(multiprocessing.cpu_count() * 0.8)
+    skip_convert_if_exists = True
+    threads = args.threads or int(multiprocessing.cpu_count() * 0.8)
+
+    args.sources = [x.lower() for x in args.sources]
 
     for dl in dls:
 
+        if len(args.sources) > 0 and dl.src.lower() not in args.sources:
+            logging.debug(f'Skipping source: {dl.src}')
+            continue
+
         root, ext = os.path.splitext(dl.filename)
+
+        sanitised_id = dl.id.replace('/', '_')
 
         if ext.lower() in ['.pdf', '.djvu', '.tiff']:
             odir = root
         elif dl.filename:
             odir = dl.filename
         else:
-            odir = dl.id.replace('/', '_')
+            odir = sanitised_id
 
         dl_dir = os.path.join(basedir, odir)
 
-        if not args.skip_dl:
+        output_file = os.path.join(basedir, odir + '.djvu')
 
-            if dl.src == 'ht':
-                dl_hathi.download(dl.id, dl_dir, skip_existing=skip_existing,
-                                  proxy=args.proxy)
-            else:
-                raise NotImplementedError
+        if args.skip_existing and os.path.isfile(output_file):
+            logging.info(f'Skip existing file: {output_file}')
+            continue
 
-        cmd = ["./make_document.py",
-               "-i", dl_dir,
-               "-t", os.path.join(basedir, tmp_dir),
-               "-R", "-T", str(threads)]
+        downloaded = False
+        if args.skip_dl:
+            downloaded = True
+        else:
+            # this is the images
+            dl.skip_existing = skip_existing
+            dl.use_proxy = args.proxy
+            downloaded = dl_book.do_download(dl, dl_dir)
 
-        if dl.filename:
-            cmd + ['-o', dl.filename]
+        if skip_convert_if_exists and os.path.exists(output_file):
+            logging.debug("Skipping convert: file exists")
+        elif not downloaded:
+            logging.debug("Skipping convert: images not downloaded OK")
+        else:
+            cmd = ["./make_document.py",
+                   "-i", dl_dir,
+                   "-o", output_file,
+                   "-t", os.path.join(basedir, tmp_dir),
+                   "-R", "-T", str(threads)]
 
-        cmd += dl.get_opts()
+            if not keep_temp:
+                cmd.append("-D")
 
-        # cmd += ["-k", "-s", "100"]
+            if dl.filename:
+                cmd + ['-o', dl.filename]
 
-        if args.verbose:
-            cmd.append("-v")
-            print(cmd)
+            cmd += get_conversion_opts(dl)
 
-        subprocess.call(cmd)
+            if args.size:
+                cmd += ["-s", str(args.size)]
+
+            if args.verbose:
+                cmd.append("-v")
+                print(cmd)
+
+            subprocess.call(cmd)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,14 @@
 import logging
 import os
 import time
+import zipfile
 
 import utils.mime_utils as MIME
 
+import requests
+import urllib.parse
+import io
+import utils.update_bar
 
 module_logger = logging.getLogger('wstools.source')
 
@@ -93,8 +98,45 @@ def dl_to_directory(source, output_dir, skip_existing=True,
                 time.sleep(1)
 
 
+def extract_zip_to(zip_fo, dir_name):
+    with zipfile.ZipFile(zip_fo) as zip_ref:
+        zip_ref.extractall(dir_name)
+
+
 def sanitise_id(id):
     return id.replace('/', '_').replace(':', '_').replace('$', '_')
+
+
+def get_from_url(url, session=None, name=None):
+
+    if session is None:
+        session = requests.Session()
+
+    r = session.get(url, stream=True)
+    r.raise_for_status()
+
+    try:
+        clen = int(r.headers['Content-Length'])
+    except (KeyError, ValueError):
+        clen = None
+
+    if not name:
+        urlo = urllib.parse.urlparse(url)
+        print(urlo, url)
+
+        try:
+            name = urlo.path.split['/'][-1]
+        except IndexError:
+            pass
+
+    buffer = io.BytesIO()
+
+    with utils.update_bar.get_download_bar(name, clen) as bar:
+        for data in r.iter_content(chunk_size=1024*1024*1):
+            size = buffer.write(data)
+            bar.update(size)
+
+    return buffer
 
 
 class Source():
@@ -104,3 +146,6 @@ class Source():
         Can this source provide direct access to files?
         """
         return False
+
+    def normalise_id(self):
+        raise NotImplementedError

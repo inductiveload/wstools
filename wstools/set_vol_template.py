@@ -54,9 +54,9 @@ def main():
 
     ws_site = pywikibot.Site("en", "wikisource")
 
-    PAGES = [x for x in range(1, 12)]
-    INDEX_FMT = "Index:Collected Works of Dugald Stewart Volume {}.djvu"
-    TEMPLATE = "Collected Works of Dugald Stewart volumes"
+    PAGES = [x for x in range(1, 24)]
+    INDEX_FMT = "Index:Transactions NZ Institute Volume {}.djvu"
+    TEMPLATE = "Transactions NZ Institute volumes"
 
     VOL_TEMPLATE = "{{{{{}}}}}".format(TEMPLATE)
     SUMMARY = "Adding volume template: [[Template:{}]]".format(TEMPLATE)
@@ -64,8 +64,10 @@ def main():
     PAGES = [INDEX_FMT.format(x) for x in PAGES]
 
     for p in PAGES:
-
-        set_vol_list(ws_site, p, VOL_TEMPLATE, SUMMARY, args.dry_run)
+        try:
+            set_vol_list(ws_site, p, VOL_TEMPLATE, SUMMARY, args.dry_run)
+        except pywikibot.exceptions.NoPageError:
+            pass
 
 
 if __name__ == "__main__":

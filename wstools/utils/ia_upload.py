@@ -6,7 +6,8 @@ import os
 import logging
 
 
-def upload_file(file, filename, title, author, editor, date, src_url=None, reupload=False):
+def upload_file(file, filename, title, volume,
+    author, editor, date, src_url=None, reupload=False):
 
     metadata = {
         'mediatype': 'text',
@@ -17,6 +18,9 @@ def upload_file(file, filename, title, author, editor, date, src_url=None, reupl
 
     if src_url:
         metadata['source'] = src_url
+
+    if volume:
+        metadata['volume'] = volume
 
     root, ext = os.path.splitext(filename)
 

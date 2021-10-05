@@ -2,6 +2,9 @@
 import requests
 from requests_oauthlib import OAuth1
 import urllib.parse
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+import time
 
 import os
 
@@ -44,14 +47,24 @@ class DataAPI(object):
                             client_secret=client_secret,
                             signature_type='query')
 
+        self.max_retry = 5
+        self.delay_on_retry = 12
+
         self.rsession = requests.Session()
 
-        # self.rsession.headers.update({
-        #     "user-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.190 Safari/537.36"
-        # })
+        self.rsession.headers.update({
+            "user-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.190 Safari/537.36"
+        })
 
         if proxies:
             self.rsession.proxies.update(proxies)
+
+        retry = Retry(total=5,
+                      backoff_factor=5,
+                      status_forcelist=[401, 429])
+
+        self.rsession.mount('http://', HTTPAdapter(max_retries=retry))
+        self.rsession.mount('https://', HTTPAdapter(max_retries=retry))
 
         self.rsession.auth = self.oauth
 
@@ -143,9 +156,23 @@ class DataAPI(object):
             'res': resolution,
         }
 
-        r = self._makerequest('pageimage', doc_id, sequence=sequence,
-                              params=params)
-        return r.content, r.headers['content-type']
+        retries = 0
+
+        while True:
+            try:
+
+                r = self._makerequest('pageimage', doc_id, sequence=sequence,
+                                      params=params)
+                return r.content, r.headers['content-type']
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code
+
+                if retries < self.max_retries and status_code in [503, 429]:
+                    retries += 1
+                    time.sleep(self.delay_on_retry)
+                    continue
+
+                raise
 
     def get_ocr(self, doc_id, sequence):
         r = self._makerequest('pageocr', doc_id, sequence=sequence, json=False)

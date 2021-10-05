@@ -1,0 +1,22 @@
+-prefixindex:Whenwewereveryyo0000unse
+-namespace:File
+-summary:Tidy imported file description
+-regex
+^\s*
+{{do not move to commons|expiry=2047|why=illustrator died in 1976, non-US work}}\n\n
+\{\{PD-scan\}\}
+{{PD/US|1976}}
+\{\{PD/US\|1956\}\}
+{{PD/US|1976}}
+\{\{Uncategorized.*?\}\}
+
+\s*$
+\n[[Category:When We Were Very Young images]]
+Title =.*
+Title = When We Were Very Young
+Author =.*
+Author = Alan Alexander Milne
+Illustrator =.*
+Illustrator = Ernest Howard Shepard
+Source =.*
+Source = {{IA|whenwewereveryyo0000unse_i2b7}}
