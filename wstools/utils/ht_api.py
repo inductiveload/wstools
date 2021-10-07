@@ -47,7 +47,7 @@ class DataAPI(object):
                             client_secret=client_secret,
                             signature_type='query')
 
-        self.max_retry = 5
+        self.max_retries = 5
         self.delay_on_retry = 12
 
         self.rsession = requests.Session()

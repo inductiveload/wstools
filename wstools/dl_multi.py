@@ -183,11 +183,12 @@ def main():
     skip_convert_if_exists = True
     threads = args.threads or int(multiprocessing.cpu_count() * 0.8)
 
-    args.sources = [x.lower() for x in args.sources]
+    if args.sources:
+        args.sources = [x.lower() for x in args.sources]
 
     for dl in dls:
 
-        if len(args.sources) > 0 and dl.src.lower() not in args.sources:
+        if args.sources and len(args.sources) > 0 and dl.src.lower() not in args.sources:
             logging.debug(f'Skipping source: {dl.src}')
             continue
 

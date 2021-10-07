@@ -24,6 +24,7 @@ import utils.string_utils
 import utils.ia_upload
 import utils.phab_tasks
 import utils.update_bar
+import utils.range_selection
 
 import requests
 # import requests_cache
@@ -324,6 +325,9 @@ FIELD_MAP = {
             'footer': 'Footer',
             'width': 'Width',
         },
+        'formats': {
+            'title': "''[[{}]]''"
+        },
         'default_progress': 'X',
         'default_transclusion': 'no',
         'default_type': 'book',
@@ -348,7 +352,7 @@ FIELD_MAP = {
             'editor': 'Editor',
             'illustrator': 'Ilustrador',
             'publisher': 'Editorial',
-            'printer': 'Printer',
+            'printer': 'Imprenta',
             'city': 'Lugar',
             'file_source': 'Fuente',
             'year': 'Ano',
@@ -379,9 +383,7 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
 
     vlist = r.get('vollist') or ""
 
-    title_val = r.get('mainspace') or r.get('title')
-    title = f"''[[{title_val}]]''"
-
+    title = r.get('mainspace') or r.get('title')
     subtitle = r.get('subtitle') or ""
 
     volume = ''
@@ -393,13 +395,13 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
 
         subpage_disp = r.get('subpage_disp') or subpage
 
-        volume = f'[[{title_val}/{subpage}|{subpage_disp}]]'
+        volume = f'[[{title}/{subpage}|{subpage_disp}]]'
 
         if r.get('vol_detail'):
             volume += " ({})".format(r.get('vol_detail'))
 
     year = r.get('year') or (r.get('date') or "")
-    key = get_sortkey(title_val)
+    key = get_sortkey(title)
 
     remarks = ''
     if phab_id:
@@ -486,7 +488,14 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
 
         if value is not None:
             param = fmap['params'][field]
-            template.add(param, value.strip() + '\n')
+
+            # use a formatter if there is one
+            if 'formats' in fmap and field in fmap['formats']:
+                value = fmap['formats'][field].format(value.strip())
+            else:
+                value = value.strip()
+
+            template.add(param, value + '\n')
 
     return re.sub(r'\n\n+', '\n', str(template))
 
@@ -690,9 +699,35 @@ def split_any(txt, seps):
     return [i.strip() for i in txt.split(default_sep)]
 
 
-def handle_row(r, args):
+def find_file(r, in_dir):
 
-    print(r)
+    candidate_fns = []
+    candidate_exts = ['.djvu', '.pdf']
+
+    if r.get('id'):
+        candidate_fns.append(r.get('id'))
+
+    if r.get('filename'):
+        candidate_fns.append(r.get('filename'))
+
+    for n in candidate_fns:
+
+        print(n)
+        _, ext = os.path.splitext(n)
+        if ext not in candidate_exts:
+            exts = candidate_exts
+        else:
+            exts = ['']
+
+        for e in exts:
+            try_file = os.path.join(in_dir, n + e)
+            if os.path.isfile(try_file):
+                return try_file
+
+    return None
+
+
+def handle_row(r, args):
 
     if r.get_bool('skip', False):
         logging.debug("Skipping row")
@@ -719,8 +754,15 @@ def handle_row(r, args):
         # use local files if given
         file_url = r.get('file')
 
-        if args.file_dir and not os.path.isabs(file_url):
+        if os.path.isdir(file_url):
+            # path exists, but it's just a dir, so magically guess
+            file_url = find_file(r, file_url)
+
+        elif args.file_dir and not os.path.isabs(file_url):
             file_url = os.path.join(args.file_dir, file_url)
+
+        if not file_url:
+            raise RuntimeError(f'Cannot find file: {r.get("file")}')
 
         logging.debug("Local file size {} MB: {}".format(
             os.path.getsize(file_url) // (1024 * 1024), file_url))
@@ -946,22 +988,6 @@ def handle_row(r, args):
 
     return True
 
-
-def get_rows(args):
-    rows = None
-    if args:
-        rows = []
-        for r in args:
-            m = re.match(r'(\d+)-(\d+)', r)
-
-            if m:
-                rows += range(int(m.group(1)), int(m.group(2)))
-            else:
-                rows.append(int(r))
-
-    return rows
-
-
 class DataRow():
 
     def __init__(self, col_map, row):
@@ -1099,7 +1125,7 @@ def main():
 
     pywikibot.config.socket_timeout = (10, 200)
 
-    rows = get_rows(args.rows)
+    rows = utils.range_selection.get_range_selection(args.rows)
 
     uploaded_count = 0
     row_idx = 1

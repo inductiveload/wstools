@@ -89,7 +89,7 @@ class IaSource(utils.source.Source):
     def has_djvu(self):
 
         djvu_fileinfo = self._get_files_with_format("DjVu")
-        return djvu_fileinfo is not None
+        return djvu_fileinfo is not None and len(djvu_fileinfo) > 0
 
     def get_jp2_zip(self):
 

@@ -2,7 +2,7 @@
 import re
 
 
-def get_range_selection(page_arr, last=None):
+def get_range_selection(page_arr, last=None, unique=True):
     """
     From an array like 1, 2, 4-5, 6+2, 22-end, get a list of the
     individual pages
@@ -29,6 +29,7 @@ def get_range_selection(page_arr, last=None):
             rows.append(int(r))
 
     # remove duplicates
-    rows = list(dict.fromkeys(rows))
+    if unique:
+        rows = list(dict.fromkeys(rows))
 
     return rows

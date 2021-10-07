@@ -1,0 +1,8 @@
+-site:wikisource:es
+-prefixindex:Index:Anales de la Sociedad Científica Argentina
+-summary:Fix mistaken formatting
+-regex
+Printer
+Imprenta
+''\[\[(.*?)\]\]''
+\1
