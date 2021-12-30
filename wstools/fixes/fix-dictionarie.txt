@@ -1,0 +1,5 @@
+-pt:0
+-prefixindex:The Invisible Man (1897)/
+-summary:Adjust titles after move
+[[../]]
+[[../|The Invisible Man]]

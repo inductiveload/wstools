@@ -4,8 +4,10 @@ import argparse
 import logging
 
 import subprocess
-
+import os
+import sys
 import re
+import dotenv
 
 
 class QuickPwbRunner():
@@ -16,7 +18,12 @@ class QuickPwbRunner():
 
     def run(self, file):
 
-        cmd = ["pwb.py"]
+        if os.getenv('QUICKPWB_PWB_PATH'):
+            pwb = os.path.join(os.getenv('QUICKPWB_PWB_PATH'), 'pwb.py')
+        else:
+            pwb = 'pwb.py'
+
+        cmd = [pwb]
 
         script_name = "replace"
 
@@ -80,7 +87,30 @@ class QuickPwbRunner():
         subprocess.call(cmd)
 
 
+def get_cmd_file(filename):
+
+    if os.path.isfile(filename):
+        return filename
+
+    candidates = [filename]
+    if not filename.endswith('.txt'):
+        candidates.append(filename + '.txt')
+
+    search = os.getenv('QUICKPWB_FIX_PATH')
+    if search:
+        search = search.split(':')
+
+        for s in search:
+            for c in candidates:
+                fn = os.path.join(s, c)
+                if os.path.isfile(fn):
+                    return fn
+
+    return None
+
 def main():
+
+    dotenv.load_dotenv();
 
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -96,7 +126,13 @@ def main():
 
     runner = QuickPwbRunner(args.put_throttle)
 
-    with open(args.file) as cmd_file:
+    cmd_fn = get_cmd_file(args.file)
+
+    if not cmd_fn or not os.path.isfile(cmd_fn):
+        logging.error(f'{cmd_fn} is not a file')
+        sys.exit(1)
+
+    with open(cmd_fn, 'r') as cmd_file:
         runner.run(cmd_file)
 
 

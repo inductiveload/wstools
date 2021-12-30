@@ -1,3 +1,5 @@
+import copy
+
 
 def RepresentsInt(s):
     try:
@@ -14,6 +16,12 @@ class PageRange():
         self.end = start + length - 1
         self.number = number
         self.form = form
+
+    def __str__(self):
+        return f'PageRange({self.start}, {self.end} = {self.number})'
+
+    def __repr__(self):
+        return str(self)
 
     def to_str(self, offset):
 
@@ -167,3 +175,78 @@ class PageList():
                 else:
                     # start a new range
                     self.ranges.append(PageRange(self.page, number, form, 1))
+
+    def strip_range_pages(self, r, inc, offset):
+        """
+        Remove pages from a range that are not in the given inc list
+        """
+
+        new = []
+        pages = range(r.start, r.end + 1)
+        intersect = [p for p in pages if p in inc]
+
+        if not intersect:
+            # nothing left
+            return new, offset + len(pages)
+        else:
+
+            offset += intersect[0] - pages[0]
+
+            last = intersect[0]
+            nr = copy.deepcopy(r)
+            nr.start = intersect[0] - offset
+            nr.end = intersect[0] - offset
+
+            for page in intersect[1:]:
+
+                if page == last + 1:
+                    # extend existing range
+                    nr.end = page - offset
+                else:
+                    # gap: start a new range
+
+                    offset += page - last
+
+                    new.append(nr)
+                    nr = copy.deepcopy(r)
+                    nr.start = page - offset
+                    nr.end = page - offset
+
+                last = page
+
+            if nr not in new:
+                new.append(nr)
+
+        return new, offset
+
+    def strip_pages(self, inc, exc):
+        """
+        Adjust the page ranges if we have adjusted the included/excluded pages
+
+        Includes go first, if any, then excludes knock out from there
+        """
+
+        # nothing to do
+        if not self.ranges:
+            return
+
+        # use the whole range
+        if not inc:
+            highest = self.ranges[-1].end
+            inc = range(1, highest + 1)
+
+        # remove anything in exc from inc
+        if exc:
+            inc = [p for p in inc if p not in exc]
+
+        # inc is now all pages (and only page) we wish to include
+
+        new_ranges = []
+
+        offset = 0
+
+        for r in self.ranges:
+            transformed_ranges, offset = self.strip_range_pages(r, inc, offset)
+            new_ranges += transformed_ranges
+
+        self.ranges = new_ranges

@@ -5,7 +5,7 @@ import urllib.parse
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import time
-
+import logging
 import os
 
 
@@ -39,7 +39,7 @@ class DataAPI(object):
               'https': os.getenv('HATHI_DAPI_HTTPS_PROXY'),
             }
 
-        print(proxies)
+        logging.debug(proxies)
 
         self.client_key = client_key
         self.client_secret = client_secret
@@ -117,7 +117,7 @@ class DataAPI(object):
             if callback:
                 params['callback'] = callback
 
-        print(url)
+        logging.debug(url)
 
         r = self.rsession.get(url, params=params)
         r.raise_for_status()
@@ -160,7 +160,6 @@ class DataAPI(object):
 
         while True:
             try:
-
                 r = self._makerequest('pageimage', doc_id, sequence=sequence,
                                       params=params)
                 return r.content, r.headers['content-type']

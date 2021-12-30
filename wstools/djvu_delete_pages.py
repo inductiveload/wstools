@@ -16,7 +16,7 @@ def main():
     parser.add_argument('-f', '--file',
                         help='The file to delete pages from')
     parser.add_argument('-p', '--pages', nargs='+',
-                        help='The pages to delete')
+                        help='The pages to delete (e.g. 2,2-5,42+3')
 
     args = parser.parse_args()
 

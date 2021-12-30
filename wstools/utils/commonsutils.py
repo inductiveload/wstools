@@ -7,4 +7,5 @@ def lang_cat_name(code):
         'la': "Latin",
         'de': "German",
         'es': "Spanish",
+        'pi': "Pali"
     }[code]

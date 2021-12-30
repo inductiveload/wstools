@@ -30,6 +30,8 @@ class HathiSource(utils.source.Source):
         self._metadata = None
         self.dapi = dapi
 
+        self.direct_download = False
+
     def _meta(self):
 
         if self._metadata is None:
@@ -49,7 +51,19 @@ class HathiSource(utils.source.Source):
 
         module_logger.debug("Getting image for sequence {}".format(seq))
 
-        data, image_type = self.dapi.get_image(self.htid, sequence=seq)
+        if not self.direct_download:
+            data, image_type = self.dapi.get_image(self.htid, sequence=seq)
+        else:
+            res = 10000
+            escaped_id = self.htid #replace('$', '_')
+            url = 'https://babel.hathitrust.org/cgi/imgsrv/image?' \
+                f'id={escaped_id};seq={seq};size={res};rotation=0'
+
+            r = self.dapi.rsession.get(url)
+            r.raise_for_status()
+
+            data = r.content
+            image_type = r.headers['content-type']
         return data, image_type
 
     def get_coord_ocr(self, seq):

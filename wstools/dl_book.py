@@ -2,11 +2,19 @@
 
 import argparse
 import logging
+import urllib
 import dotenv
+import os
 
 import dl_hathi
 import dl_ia
 
+import utils.ht_source
+import utils.ht_api
+import utils.ia_source
+import utils.url_source
+
+import urllib.parse
 
 class DlDef():
     def __init__(self, src, id, filename):
@@ -15,18 +23,78 @@ class DlDef():
         self.filename = filename
         self.skip_existing = False
         self.use_proxy = False
+        self.hathi_direct = False
+        self.exclude_pages = []
+        self.include_pages = []
+        self.force_dl = False
+        self.regenerate = False
+
+        self.source = None
+
+    def _get_source(self):
+        if self.source is not None:
+            return self.source
+
+        if self.src == 'ia':
+            self.source = utils.ia_source.IaSource(self.id)
+        elif self.src == 'ht':
+            dapi = utils.ht_api.DataAPI(client_key=None, client_secret=None,
+                                        proxies=self.use_proxy, secure=True)
+            self.source = utils.ht_source.HathiSource(dapi, self.id)
+        elif self.src == 'url':
+            self.source = utils.url_source.UrlSource(self.id)
+
+        return self.source
+
+    def get_pagelist(self):
+        source = self._get_source()
+        if source:
+            pagelist = source.get_pagelist()
+            print( pagelist )
+            if pagelist:
+                pagelist.clean_up()
+            return pagelist
+        return None
 
 
-def do_download(dl, dl_dir):
+    def do_download(self, dl_dir):
+        source = self._get_source()
 
-    if dl.src == 'ht':
-        dl_hathi.download(dl.id, dl_dir, skip_existing=dl.skip_existing,
-                          proxy=dl.use_proxy)
-        return True
-    elif dl.src == 'ia':
-        return dl_ia.download(dl.id, dl_dir, skip_existing=dl.skip_existing, skip_djvu=True)
-    else:
-        raise NotImplementedError
+        if not os.path.exists(dl_dir):
+            os.makedirs(dl_dir, exist_ok=True)
+
+        if self.src == 'ht':
+            return dl_hathi.download(self.hathi_direct, self.id, dl_dir,
+                                    skip_existing=self.skip_existing,
+                                    proxy=self.use_proxy,
+                                    include_pages=self.include_pages,
+                                    exclude_pages=self.exclude_pages)
+        elif self.src == 'ia':
+            return dl_ia.download(self.id, dl_dir,
+                                skip_existing=self.skip_existing,
+                                skip_djvu=not self.force_dl,
+                                get_images=self.regenerate,
+                                include_pages=self.include_pages,
+                                exclude_pages=self.exclude_pages)
+        elif self.src == 'url':
+
+            dest_fn = os.path.join(dl_dir, source.get_file_name())
+
+            if self.skip_existing and os.path.exists(dest_fn):
+                return dest_fn
+
+            # buffer = io.BytesIO()
+            fo = source.download(proxy=self.use_proxy)
+
+            if fo is not None:
+
+                with open(dest_fn, 'wb') as dest_fo:
+                    fo.seek(0)
+                    dest_fo.write(fo.read())
+                return dest_fn
+            return None
+        else:
+            raise NotImplementedError
 
 
 def main():

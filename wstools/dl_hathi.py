@@ -14,23 +14,26 @@ import utils.ht_source as HTSRC
 import utils.source
 
 
-def download(ht_id, output_dir, skip_existing=False, skip_images=False,
-             proxy=False):
+def download(direct, ht_id, output_dir, skip_existing=False, skip_images=False,
+             proxy=False, include_pages=None, exclude_pages=None):
 
     dapi = HTAPI.DataAPI(client_key=None, client_secret=None, proxies=proxy,
                          secure=True)
 
     rq = dapi.rsession.get("https://api.ipify.org?format=json")
-    print(rq.content)
+    logging.debug(rq.content.decode('utf-8'))
 
     ht_source = HTSRC.HathiSource(dapi, ht_id)
+    ht_source.direct_download = direct
 
     utils.source.dl_to_directory(ht_source, output_dir,
                                  skip_existing=skip_existing,
                                  images=not skip_images,
                                  ocr=False,
-                                 make_dirs=True)
-
+                                 make_dirs=True,
+                                 include_pages=include_pages,
+                                 exclude_pages=exclude_pages)
+    return output_dir
 
 def main():
 
@@ -47,6 +50,8 @@ def main():
                         help='Skip image download')
     parser.add_argument('-p', '--proxy', action='store_true',
                         help='Use a proxy')
+    parser.add_argument('-D', '--direct', action='store_true',
+                        help='Use the direct download method')
 
     args = parser.parse_args()
 
@@ -70,8 +75,8 @@ def main():
     logging.getLogger("oauthlib").setLevel(logging.WARNING)
     logging.getLogger("requests_oauthlib").setLevel(logging.WARNING)
 
-    download(args.id, args.output_dir, args.skip_existing, args.skip_images,
-             args.proxy)
+    download(args.direct, args.id, args.output_dir, args.skip_existing,
+             args.skip_images, args.proxy)
 
 
 if __name__ == "__main__":

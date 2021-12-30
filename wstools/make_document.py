@@ -11,15 +11,19 @@ import multiprocessing
 import concurrent.futures
 import subprocess
 import traceback
+import re
 
 import sexpdata
 import tempfile
 
 import utils.djvu_utils as DJVU
 import utils.tiff_utils as TIFF
+import utils.file_utils
+import utils.range_selection
 
 
 from html.parser import HTMLParser
+from tqdm import tqdm
 
 
 def get_hocr_bbox(e, pg_bbox=None):
@@ -218,15 +222,19 @@ def convert_img(src, dst):
     if dst_ext == src_ext:
         # nothing to convert
         pass
-    elif src_ext in [".jp2", ".png", ".tif", ".tiff"] and dst_ext in [".jpg", ".jpeg", ".pnm", ".pbm"]:
+    elif src_ext in [".jp2", ".png", ".tif", ".tiff"] and dst_ext in \
+            [".jpg", ".jpeg", ".pnm", ".pbm"]:
         im_generic_convert(src, dst)
 
 
 def convert_img_ocr(src, dst, params):
 
-    cmd = ["convert", src, "-threshold", str(params["ocr_threshold"]) + "%"]
+    cmd = ['convert', src,
+           '-alpha', 'off',
+           '-normalize',
+           '-threshold', f'{params["ocr_threshold"]}%']
 
-    if "ocr_shave" in params and params["ocr_shave"] is not None:
+    if 'ocr_shave' in params and params['ocr_shave'] is not None:
         # add a white border over the image edges
         cmd += ["-write", "mpr:img0",
                 # white BG
@@ -318,7 +326,8 @@ def set_page_djvu_ocr(djvu_page, sexpr_text):
         sexp_f.write(sexpr_text)
         sexp_f.flush()
 
-        cmd = ["djvused", djvu_page, "-e", "select 1; set-txt {}".format(sexp_f.name), "-s"]
+        cmd = ["djvused", djvu_page,
+               "-e", f"select 1; set-txt {sexp_f.name}", "-s"]
         logging.debug(cmd)
         subprocess.call(cmd)
 
@@ -326,6 +335,9 @@ def set_page_djvu_ocr(djvu_page, sexpr_text):
 def file_exists_nonzero(hocr_fn):
     return os.path.exists(hocr_fn) and os.path.getsize(hocr_fn) > 0
 
+def file_is_in_dir(path, dir):
+    head, _ = os.path.split(path)
+    return head == dir
 
 def process_page(img, tempdir, params):
 
@@ -359,7 +371,8 @@ def process_page(img, tempdir, params):
         if ext in params['bitonal_fmts']:
             conv_info['djvusrc'] = dest_root + ".pbm"
         else:
-            conv_info['djvusrc'] = dest_root + ".pnm"
+            # PNM is really, really big and we're going to compress it to death anyway
+            conv_info['djvusrc'] = dest_root + ".jpg"
 
     elif ext in [".tiff", ".tif"]:
         bps = TIFF.get_bitdepth(img)
@@ -373,7 +386,7 @@ def process_page(img, tempdir, params):
             conv_info['djvusrc'] = dest_root + ".pbm"
         else:
             # colour, and we want it colour
-            conv_info['djvusrc'] = dest_root + ".pnm"
+            conv_info['djvusrc'] = dest_root + ".jpg"
     else:
         RuntimeError("Unsupported file " + img)
 
@@ -389,7 +402,9 @@ def process_page(img, tempdir, params):
 
     # then make the djvu
     if (not os.path.exists(conv_info['djvu']) or not params['skip_convert']):
-        make_djvu_page(conv_info["djvusrc"], conv_info["djvu"], params["max_page_size"])
+        make_djvu_page(conv_info["djvusrc"],
+                       conv_info["djvu"],
+                       params["max_page_size"])
 
     if not params["skip_ocr"]:
 
@@ -397,18 +412,20 @@ def process_page(img, tempdir, params):
 
         if params["use_existing_ocr"] and conv_info['orighocr']:
 
-            logging.debug("Using existing HOCR: {}".format(conv_info['orighocr']))
+            logging.debug(f'Using existing HOCR: {conv_info["orighocr"]}')
             hocr_fn = conv_info['orighocr']
 
         elif params['keep_ocr'] and file_exists_nonzero(hocr_fn):
-            logging.debug("OCR HOCR file exists, skipping creation of: {}".format(hocr_fn))
+            logging.debug(
+                    f"OCR HOCR file exists, skipping creation of: {hocr_fn}")
         else:
 
             ocr_src_fn = conv_info['ocrsrc']
 
             if (params['keep_ocr'] and ocr_src_fn is not None and
                     file_exists_nonzero(ocr_src_fn)):
-                logging.debug("OCR source file exists, skipping conversion: {}".format(ocr_src_fn))
+                logging.debug("OCR source file exists, "
+                              f"skipping conversion: {ocr_src_fn}")
 
             # check the image isn't one of the other conversions
             elif ocr_src_fn not in [conv_info['djvusrc'], img]:
@@ -420,6 +437,16 @@ def process_page(img, tempdir, params):
 
         insert_hocr_to_djvu(hocr_fn, conv_info["djvu"], conv_info["ocr_text"])
 
+    def tidy_temp_file(key):
+        if key in conv_info and conv_info[key] and file_is_in_dir(conv_info[key], tempdir):
+            os.remove(conv_info[key])
+
+    if not params['keep_temp']:
+        # converted image files take quite a bit of space, which might be
+        # on a RAM disk, so tidy them up as we go
+        tidy_temp_file('djvusrc')
+        tidy_temp_file('ocrsrc')
+
     return conv_info
 
 
@@ -427,68 +454,51 @@ def convert_pages(files, tempdir, params):
 
     page_data = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=params['threads']) as executor:
+    with tqdm(total=len(files), desc='Conv.') as progress_bar:
 
-        futures = []
-        for f in files:
-            futures.append(executor.submit(process_page, f, tempdir, params))
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=params['threads']) as executor:
 
-        logging.debug("Image Conversions submitted")
+            futures = []
+            for f in files:
 
-        try:
+                for excl_regex in params['excl_patterns']:
+                    if excl_regex.match(f):
+                        logging.debug(
+                            f'Skipping file {f} '
+                            f'(due to pattern \'{excl_regex.pattern}\')')
+                        continue
 
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    data = future.result()
-                    logging.debug("Conversion complete: {}".format(data['origimg']))
-                    page_data.append(data)
-                except Exception as exc:
-                    print('%r generated an exception: %s' % (future, exc))
-                    traceback.print_exc()
-                    raise
-        except Exception:
+                futures.append(
+                        executor.submit(process_page, f, tempdir, params))
 
-            executor.shutdown(wait=False)
-            logging.error("Conversions terminating")
+            logging.debug("Image Conversions submitted")
 
-            for f in futures:
-                f.cancel()
+            try:
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        data = future.result()
+                        logging.debug(
+                                f'Conversion complete: {data["origimg"]}')
+                        page_data.append(data)
+                        progress_bar.update(1)
+                    except Exception as exc:
+                        print('%r generated an exception: %s' % (future, exc))
+                        traceback.print_exc()
+                        raise
+            except Exception:
 
-            return None
+                executor.shutdown(wait=False)
+                logging.error("Conversions terminating")
 
-        logging.debug("Image Conversions complete")
+                for f in futures:
+                    f.cancel()
+
+                return None
+
+            logging.debug("Image Conversions complete")
 
     return page_data
-
-
-def get_image_exts():
-    return [".jpg", ".jpeg", ".jp2", ".png", ".pnm", ".pbm", ".tif", ".tiff"]
-
-
-def dir_has_any_images(d):
-
-    exts = get_image_exts()
-    for name in os.listdir(d):
-
-        if os.path.isfile(os.path.join(d, name)):
-            _, ext = os.path.splitext(name)
-
-            if ext.lower() in exts:
-                return True
-
-    return False
-
-
-def skip_interposed_directory(d):
-
-    have_img_files = dir_has_any_images(d)
-
-    subdirs = [name for name in os.listdir(d) if os.path.isdir(os.path.join(d, name))]
-
-    if len(subdirs) != 1 or have_img_files:
-        return d
-
-    return os.path.join(d, subdirs[0])
 
 
 def main():
@@ -510,8 +520,8 @@ def main():
                         help='Don\'t run OCR if file exists')
     parser.add_argument('-t', '--tempdir',
                         help='The working directory, if not given a temp dir is created')
-    parser.add_argument('-D', '--delete-temp', action='store_true',
-                        help='Delete the temp directory when done')
+    parser.add_argument('-D', '--keep-temp', action='store_true',
+                        help='Keep temp files and directory when done')
     parser.add_argument('-o', '--out-djvu',
                         help='The output file, if not given, it goes next to the input dir')
     parser.add_argument('-s', '--djvu-size', type=int,
@@ -528,6 +538,10 @@ def main():
                         help='OCR language(s)')
     parser.add_argument('-T', '--threads', type=int, default=0,
                         help='Threads to use, 0 for number of cores')
+    parser.add_argument('-P', '--exclude-pages', nargs='+', default=[],
+                        help='Page to exclude from the output (automatically creates exclusion patterns)')
+    parser.add_argument('-X', '--exclusion-patterns', nargs='+', default=[],
+                        help='Files to exclude from the output, as regex patterns. More flexible than -P.')
 
     args = parser.parse_args()
 
@@ -544,14 +558,15 @@ def main():
 
     os.makedirs(tempdir, exist_ok=True)
 
-    # some folders, e.g. when extracted from ZIPs or TARs have a single directory
-    # rather than making it complicated for the called, spot this and go inside
-    args.in_dir = skip_interposed_directory(args.in_dir)
+    # some folders, e.g. when extracted from ZIPs or TARs have a single
+    # directory rather than making it complicated for the caller, spot this
+    # and go inside
+    args.in_dir = utils.file_utils.skip_interposed_directory(args.in_dir)
 
     if args.out_djvu is None:
         args.out_djvu = args.in_dir + ".djvu"
 
-    files = get_dir_list_with_exts(args.in_dir, get_image_exts())
+    files = get_dir_list_with_exts(args.in_dir, utils.file_utils.get_image_exts())
 
     if args.djvu_size:
         # in bytes
@@ -561,6 +576,13 @@ def main():
 
     if args.ocr_threshold < 0 or args.ocr_threshold > 100:
         raise ValueError("OCR threshold {} is not in the range 0-100".format(args.threshold))
+
+    excl_patterns = [re.compile(x) for x in args.exclusion_patterns]
+
+    # add the page exclusions
+    for ex_page in utils.range_selection.get_range_selection(args.exclude_pages):
+        patt = fr'\b{ex_page:04}\.'
+        excl_patterns.append(patt)
 
     params = {
         "max_page_size": max_page_size,
@@ -574,6 +596,8 @@ def main():
         "ocr_shave": args.ocr_crop,
         "ocr_char_blacklist": args.ocr_blacklist,
         "use_existing_ocr": not args.ignore_original_ocr,
+        "excl_patterns": excl_patterns,
+        "keep_temp": args.keep_temp
     }
 
     page_data = convert_pages(files, tempdir, params)
@@ -586,11 +610,12 @@ def main():
     djvu_files.sort()
     DJVU.create_djvu_from_pages(djvu_files, args.out_djvu)
 
-    if args.delete_temp:
+    if not args.keep_temp:
         logging.debug("Deleting temp dir: {}".format(tempdir))
         shutil.rmtree(tempdir)
 
     return 0
+
 
 if __name__ == "__main__":
     main()

@@ -13,6 +13,9 @@ import itertools
 import io
 import urllib.parse
 import time
+import shutil
+import multiprocessing
+import traceback
 
 import utils.pagelist
 import utils.source
@@ -25,6 +28,11 @@ import utils.ia_upload
 import utils.phab_tasks
 import utils.update_bar
 import utils.range_selection
+import utils.row_map
+import utils.author
+import utils.choose_file
+
+import dl_book
 
 import requests
 # import requests_cache
@@ -40,15 +48,14 @@ import scp
 
 import subprocess
 
-
 WS_LOCAL = {
     'en': {
         'no_commons': {
             'title': 'Do not move to Commons',
             'until': 'until',
             'reason': 'why'
-        }
-    }
+        },
+    },
 }
 
 
@@ -67,7 +74,7 @@ def handle_upload_warning(warnings):
     logging.error(warnings)
 
     for w in warnings:
-        if w.code not in ['was-deleted', 'exists-normalized', 'page-exists']:
+        if w.code not in ['exists', 'was-deleted', 'exists-normalized', 'page-exists']:
             return False
 
     return True
@@ -96,12 +103,17 @@ class StandardWikiUpload(UploadHandler):
 
         filepage = pywikibot.FilePage(self.site, "File:" + name)
 
+        old_retries = pywikibot.config.max_retries
+
         try:
             if self.simulate_stash_failure:
                 logging.debug(f"Simulating stash failure at {self.site}")
                 raise pywikibot.exceptions.APIError('stashfailed', '')
 
             if file_url.startswith("http"):
+
+                # do not retry - a timeout is normal
+                pywikibot.config.max_retries = 4
                 self.site.upload(filepage, source_url=file_url,
                                  comment=desc,
                                  report_success=False,
@@ -125,6 +137,8 @@ class StandardWikiUpload(UploadHandler):
                     ignore_warnings=handle_write_filepage_warning,
                 )
             return False
+        finally:
+            pywikibot.config.max_retries = old_retries
         return True
 
 
@@ -255,17 +269,6 @@ class UploadViaToolforgeSsh(UploadHandler):
                     # with it or something
                     pass
 
-
-def parse_header_row(hr):
-
-    mapping = {}
-
-    for i, col in enumerate(hr):
-        mapping[col.lower()] = i
-
-    return mapping
-
-
 def combine_linked(authors):
 
     links = ["[[{}|]]".format(a) for a in authors if a]
@@ -287,6 +290,87 @@ def get_sortkey(s):
     else:
         key = ""
     return key
+
+def is_local(r):
+    return bool(r.get('to_ws'))
+
+def get_license_templates(r):
+
+    lics = r.get('license').split('/')
+
+    templates = []
+    for lic in lics:
+
+        lic = lic\
+            .replace("—", "-")\
+            .replace("–", "-")
+
+        lic = lic.strip().lstrip('{').rstrip('}')
+
+        # fix a common typo
+        if lic.lower() in [
+            "pd-old-expired-auto", "pd-us-expired-auto", "pd-us-auto-expired"
+        ]:
+            lic == "PD-old-auto-expired"
+
+        deathyear = r.get('deathyear')
+        if lic == "PD-old-auto-expired" and deathyear:
+            lic += "|deathyear=" + deathyear
+
+        if is_local(r):
+            lic = f'{{{{{lic}}}}}'
+        elif lic.startswith('{{'):
+            pass
+        else:
+            lic = f'{{{{PD-scan|{lic}}}}}'
+
+        templates.append(lic)
+
+    return templates
+
+
+def tidy_cats(cats):
+
+    def tidy_cat(c):
+        c = re.sub(r'^Category\s*:\s*', '', c, re.I)
+        c = re.sub(r'\[\[Category\s*:\s*(.*)\]\]', '\\1', c, re.I)
+        return c.strip()
+
+    cats = [tidy_cat(c) for c in cats]
+    cats = [c for c in cats if c]
+
+    # rm dupes
+    cats = list(dict.fromkeys(cats))
+    return cats
+
+def get_cats(r, key, linkify) -> list:
+
+    val = r.get(key)
+    if not val:
+        return []
+
+    strs = tidy_cats(val.split('/'))
+
+    if linkify:
+        strs = [f'[[Category:{c}]]' for c in strs]
+
+    return strs
+
+def get_behalf(r):
+    user = r.get('user')
+    if user:
+        return f' (on behalf of [[User:{user}]])'
+    return ''
+
+def process_oclc(oclc):
+
+    if oclc is None:
+        return None
+
+    if 'worldcat.org' in oclc:
+        return oclc.split('/')[-1]
+
+    return oclc
 
 
 FIELD_MAP = {
@@ -325,12 +409,20 @@ FIELD_MAP = {
             'footer': 'Footer',
             'width': 'Width',
         },
-        'formats': {
-            'title': "''[[{}]]''"
+        'title_format': "''{}''",
+        'filename_formats': {
+           'volume': 'Volume {}',
+           'issue': 'Number {}',
         },
-        'default_progress': 'X',
-        'default_transclusion': 'no',
-        'default_type': 'book',
+        'source_formats': {
+            'ia': '{{{{IA|{id}}}}}',
+            'ht': '{{{{HathiTrust|{id}|book}}}}',
+        },
+        'defaults': {
+            'progress': 'X',
+            'transclusion': 'no',
+            'type': 'book',
+        },
         'field_order': [
             'type', 'title', 'lang', 'volume', 'author', 'editor',
             'translator', 'illustrator', 'publisher',  # 'printer',
@@ -367,7 +459,16 @@ FIELD_MAP = {
             'header': 'Header',
             'footer': 'Footer',
         },
-        'default_progress': 'C',
+        'filename_formats': {
+           'volume': 'Tomo {}'
+        },
+        'source_formats': {
+            'ia': '{{{{IA|{id}}}}}',
+            'ht': '{{{{HathiTrust|{id}}}}}',
+        },
+        'defaults': {
+            'progress': 'C'
+        },
         'field_order': [
             'title', 'subtitle', 'lang', 'volume', 'author', 'editor',
             'translator', 'publisher', 'printer', 'city', 'illustrator',
@@ -376,14 +477,61 @@ FIELD_MAP = {
             'header', 'footer'
         ]
     },
+    'mul': {
+        'params': {
+            'title': 'Title',
+            'lang': 'Language',
+            'author': 'Author',
+            'translator': 'Translator',
+            'editor': 'Editor',
+            'publisher': 'Publisher',
+            'city': 'Address',
+            'year': 'Year',
+            'key': 'Key',
+            'source': 'Source',
+            'image': 'Image',
+            'progress': 'Progress',
+            'pages': 'Pages',
+            'volumes': 'Volumes',
+            'remarks': 'Remarks',
+            'valid_date': 'Validation date',
+            'css': 'Css',
+            'width': 'Width',
+        },
+        'index_formats': {
+        },
+        'filename_formats': {
+           'volume': 'Volume {}',
+           'issue': 'Number {}',
+        },
+        'source_formats': {
+            'ia': '{{{{IA|{id}}}}}',
+            'ht': '{{{{HathiTrust|{id}|book}}}}',
+        },
+        'defaults': {
+            'progress': 'C'
+        },
+        'field_order': [
+            'title', 'lang', 'author', 'translator', 'editor',
+            'year', 'publisher',  # 'printer',
+            'city', 'key', 'source', 'image',
+            'progress', 'volumes', 'pages',
+            'remarks',
+            'width', 'css'
+        ]
+    }
 }
 
+def make_index_content(r, typ, lang, phab_id=None):
 
-def make_index_content(r, typ, phab_id=None, lang='en'):
+    fmap = FIELD_MAP[lang]
 
     vlist = r.get('vollist') or ""
 
-    title = r.get('mainspace') or r.get('title')
+    if vlist and not vlist.startswith('{{') and not vlist.strip()[0] in ('*:['):
+        vlist = '{{' + vlist + '}}'
+
+    title = r.get('title')
     subtitle = r.get('subtitle') or ""
 
     volume = ''
@@ -393,12 +541,37 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
         if not subpage:
             subpage = "Volume " + r.get('volume')
 
-        subpage_disp = r.get('subpage_disp') or subpage
+        subpage_disp = r.get('vol_disp') or subpage
+
+        # append issue if needed
+        issue = r.get('issue')
+        if issue:
+            if not r.get('subpage'):
+                subpage += '/' + fmap['filename_formats']['issue'].format(issue)
+            if not r.get('vol_disp'):
+                subpage_disp += ', ' + fmap['filename_formats']['issue'].format(issue)
 
         volume = f'[[{title}/{subpage}|{subpage_disp}]]'
 
-        if r.get('vol_detail'):
-            volume += " ({})".format(r.get('vol_detail'))
+    elif r.get('subpage') and r.get('vol_disp'):
+        # it's not a "volume" as such, but still needs a sub-work-level link
+        subpage = r.get('subpage')
+        subpage_disp = r.get('vol_disp') or subpage
+
+        volume = f'[[{title}/{subpage}|{subpage_disp}]]'
+
+    if volume and r.get('vol_detail'):
+        volume += " ({})".format(r.get('vol_detail'))
+
+    # linkify the title
+    title = f'[[{title}]]'
+
+    if 'title_format' in fmap:
+        title = fmap['title_format'].format(title.strip())
+
+    # This wikisource has no volume field
+    if volume and 'volume' not in fmap['params']:
+        title = title + ", " + volume
 
     year = r.get('year') or (r.get('date') or "")
     key = get_sortkey(title)
@@ -407,17 +580,15 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
     if phab_id:
         remarks = f'Pending server-side upload: [[phab:T{phab_id}]]'
 
-    fmap = FIELD_MAP[lang]
-
     template = mwparserfromhell.nodes.Template(
         ":MediaWiki:Proofreadpage_index_template"
     )
 
-    for field in fmap['field_order']:
+    for field in fmap['params']:
 
         value = None
         if field == 'type':
-            value = 'book'
+            value = fmap['defaults']['type']
         elif field == 'source':
             value = typ
         elif field == 'lang':
@@ -446,12 +617,10 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
             value = r.get('city') or ""
         elif field == 'country':
             value = r.get('country') or ""
-        elif field == 'file_source':
-            value = r.get('file_source')
         elif field == 'image':
             value = r.get('img_pg') or ""
         elif field == 'progress':
-            value = r.get('progress') or fmap['default_progress']
+            value = r.get('progress') or fmap['defaults']['progress']
         elif field == 'pages':
             value = r.get('pagelist') or ""
         elif field == 'remarks':
@@ -461,7 +630,7 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
         elif field == 'volumes':
             value = vlist
         elif field == 'transclusion':
-            value = r.get('transclusion') or fmap['default_transclusion']
+            value = r.get('transclusion') or fmap['defaults']['transclusion']
         elif field == 'valid_date':
             value = r.get('valid_date') or ""
         elif field == 'footer':
@@ -473,8 +642,12 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
         elif field == 'footer':
             value = r.get('footer') or ""
 
+        elif field == 'file_source':
+            format = fmap['source_formats'][r.get('source')]
+            value = format.format(id=r.get('id'))
+
         elif field == 'oclc':
-            value = r.get('OCLC') or ""
+            value = process_oclc(r.get('OCLC')) or ""
         elif field == 'issn':
             value = r.get('ISSN') or ""
         elif field == 'lccn':
@@ -490,31 +663,34 @@ def make_index_content(r, typ, phab_id=None, lang='en'):
             param = fmap['params'][field]
 
             # use a formatter if there is one
-            if 'formats' in fmap and field in fmap['formats']:
-                value = fmap['formats'][field].format(value.strip())
+            if 'index_formats' in fmap and field in fmap['index_formats']:
+                value = fmap['index_formats'][field].format(value.strip())
             else:
                 value = value.strip()
 
             template.add(param, value + '\n')
 
-    return re.sub(r'\n\n+', '\n', str(template))
+    template = re.sub(r'\n\n+', '\n', str(template))
+
+    # PWB doesn't link this
+    categories = [] # get_cats(r, 'ws_cats', linkify=True)
+
+    if categories:
+        template += '\n' + '\n'.join(categories)
+
+    return template
 
 
 def make_description(r, typ):
 
-    lic = r.get('license').replace("—", "-").replace("–", "-")
-
-    if lic.lower() == "pd-old-expired-auto":
-        lic == "PD-old-auto-expired"
-
-    if lic == "PD-old-auto-expired" and 'deathyear' in r:
-        lic += "|deathyear=" + r.get('deathyear')
-
     top_content = ''
     local = r.get_bool('to_ws', False)
 
+    license = '\n'.join(get_license_templates(r))
+
     if local:
-        wsl = WS_LOCAL['en']
+        subdomain = r.get('ws_lang')
+        wsl = WS_LOCAL[subdomain]
         dnmtc = mwparserfromhell.nodes.template.Template(wsl['no_commons']['title'])
 
         if r.get('no_commons_until'):
@@ -524,17 +700,14 @@ def make_description(r, typ):
             dnmtc.add(wsl['no_commons']['reason'], r.get('no_commons_reason'))
         top_content = str(dnmtc)
 
-    if local:
-        license = f'{{{{{lic}}}}}'
-    else:
-        license = f'{{{{PD-scan|{lic}}}}}'
-
     if r.get('source') == "ia":
         source = "{{{{IA|{iaid}}}}}".format(iaid=r.get('id'))
     elif r.get('source') == 'ht':
         source = "{{{{HathiTrust|{htid}|book}}}}".format(htid=r.get('id'))
     elif r.get('source') == "url":
         source = r.get('id')
+    elif not r.get('source'):
+        source = ''
     else:
         raise("Unknown source: {}".format(r.get('source')))
 
@@ -557,26 +730,28 @@ def make_description(r, typ):
     if not date and year:
         date = year
 
-    cats = "\n".join([f"[[Category:{x}]]" for x in cats])
+    cats = "\n".join([f"[[Category:{x}]]" for x in tidy_cats(cats)])
 
     if r.get('vol_disp'):
         volume = r.get('vol_disp')
     elif r.get('volume'):
         volume = r.get('volume')
+        if r.get('issue'):
+            volume += ':' + r.get('issue')
     else:
         volume = ""
 
     if r.get('vol_detail'):
         volume += f' ({r.get("vol_detail")})'
 
-    s = """
+    s = '''
 == {{{{int:filedesc}}}} ==
 {top_content}
 {{{{Book
 | Author       = {author}
 | Editor       = {editor}
 | Translator   = {translator}
-| Illustrator  =
+| Illustrator  = {illustrator}
 | Title        = {title}
 | Subtitle     = {subtitle}
 | Series title =
@@ -593,7 +768,7 @@ def make_description(r, typ):
 | Image page   = {img_page}
 | Permission   =
 | Other versions =
-| Wikisource   = s:en:Index:{{{{PAGENAME}}}}
+| Wikisource   = s:{ws_lang}:Index:{{{{PAGENAME}}}}
 | Homecat      =
 | Wikidata     =
 | OCLC         = {oclc}
@@ -605,11 +780,12 @@ def make_description(r, typ):
 {license}
 
 {cats}
-""".format(
+'''.format(
         license=license,
         top_content=top_content,
         author=r.get('commons_author') or "",
         editor=r.get('commons_editor') or "",
+        illustrator=r.get('commons_illustrator') or "",
         translator=r.get('commons_translator') or "",
         title=r.get('title') or "",
         subtitle=r.get('subtitle') or "",
@@ -620,6 +796,7 @@ def make_description(r, typ):
         date=date,
         language=r.get('language'),
         source=source,
+        ws_lang=r.get('ws_lang'),
         img_page=r.get('img_pg') or "",
         cats=cats,
         oclc=r.get('oclc') or "",
@@ -628,14 +805,6 @@ def make_description(r, typ):
         )
 
     return s
-
-
-def get_wd_site_author(repo, wdqid):
-
-    item = pywikibot.ItemPage(repo, wdqid)
-
-    # this will throw if there's no enWS page, but we're SOL at that point
-    return item.getSitelink("enwikisource")
 
 
 def get_commons_creator(wdqid):
@@ -647,23 +816,79 @@ def get_commons_creator(wdqid):
     return "{{{{creator|wikidata={}}}}}".format(wdqid)
 
 
-def get_wd_site_info(site, r, key):
+def get_wd_site_info(site, r, key, cats):
     """
-    Note, this assumes the parts are ALL wikidata IDs or ALL author page names
     """
-    parts = []
-    if r.get(key):
-        parts = r.get(key).split("/")
 
-    if not parts or not re.match("Q[0-9]+", r[key]):
-        r.set('commons_' + key, utils.string_utils.combine_list(parts))
-        r.set('ws_' + key, combine_authors_linked(parts))
+    if not r.get(key):
+        return
 
-    else:
-        repo = site.data_repository()
+    parts = r.get(key).split('/')
+    ws_lang = r.get('ws_lang')
 
-        r.set('commons_' + key, "\n".join(["{{{{creator|wikidata={}}}}}".format(a) for a in parts]))
-        r.set('ws_' + key, combine_linked([get_wd_site_author(repo, a) for a in parts]))
+    commons_vals_wd = []
+    commons_vals_str = []
+    ws_vals = []
+
+    repo = site.data_repository()
+
+    items = []
+
+    for part in parts:
+
+        if re.match(r'Q[0-9]+', part):
+            item = pywikibot.ItemPage(repo, part)
+            author = utils.author.Author.from_wikidata(item, ws_lang)
+
+            commons_vals_wd.append(get_commons_creator(part))
+
+            ws_auth = author.ws_page
+            if ws_auth:
+                ws_vals.append(ws_auth)
+            cats += author.commons_cats
+
+            items.append(author)
+        elif part:
+            commons_vals_str.append(part)
+            ws_vals.append('Author:' + part)
+
+    r.set('ws_' + key, combine_linked(ws_vals))
+    r.set('commons_' + key,
+          "\n".join(commons_vals_wd) + "\n" + combine_linked(commons_vals_str))
+    r.set(f'{key}_items', items)
+
+def get_filename(r, ws_lang):
+
+    fn = r.get('filename')
+
+    if not fn:
+        fn = r.get('title')
+
+        year = r.get('year')
+        volume = r.get('volume')
+
+        authors = r.get('author_items')
+        if authors:
+            sns = ', '.join([a.surname for a in authors if a.surname])
+            fn += f' - {sns}'
+
+        if year and not volume:
+            fn += f' - {year}'
+
+        if volume:
+            vfmt = FIELD_MAP[ws_lang]['filename_formats']['volume']
+            fn += ' - ' + vfmt.format(volume)
+
+    return fn
+
+
+def sanitise_filename(fn):
+
+    fn = fn\
+        .replace("—", "-")\
+        .replace("–", "-")
+
+    return fn
 
 
 def handle_warning(warnings):
@@ -711,8 +936,6 @@ def find_file(r, in_dir):
         candidate_fns.append(r.get('filename'))
 
     for n in candidate_fns:
-
-        print(n)
         _, ext = os.path.splitext(n)
         if ext not in candidate_exts:
             exts = candidate_exts
@@ -726,301 +949,564 @@ def find_file(r, in_dir):
 
     return None
 
+class UploadContext():
+    """
+    Representation of the context for a single file's download/convert/upload process
+    """
 
-def handle_row(r, args):
+    tmp_dir = None
+    target_size = None
+    filename = None
+    skip_dl = None
+    source = None
+    redownload_existing = False
+    skip_convert = False
+    keep_temp = False
+    dl_def = None
+    ext = None
 
-    if r.get_bool('skip', False):
-        logging.debug("Skipping row")
-        return False
+    def __init__(self, r, basedir) -> None:
+        self.r = r
+        self.basedir = basedir
 
-    if r.get('source') == "ia":
-        source = utils.ia_source.IaSource(r.get('id'))
-        if r.get('prefer_pdf'):
-            source.prefer_pdf = True
-    elif r.get('source') == "ht":
-        dapi = utils.ht_api.DataAPI(proxies=args.proxy)
-        source = utils.ht_source.HathiSource(dapi, r.get('id'))
-    else:
-        source = None
+    def get_conversion_opts(self):
 
-    if source is not None:
-        # normalise the ID
-        r.set('id', source.get_id())
+        src = self.r.get('source')
 
-    file_url = None
+        if src == 'ht':
+            return ["-b", ".png"]
 
-    if r.get('file'):
+        if src in ['ia', 'url']:
+            return []
 
-        # use local files if given
-        file_url = r.get('file')
+        raise NotImplementedError(f'Unknown source {src}')
 
-        if os.path.isdir(file_url):
-            # path exists, but it's just a dir, so magically guess
-            file_url = find_file(r, file_url)
+    def get_output_file(self):
+        of = self.dl_dir + (self.ext or '')
+        return of
 
-        elif args.file_dir and not os.path.isabs(file_url):
-            file_url = os.path.join(args.file_dir, file_url)
+    def ws_lang(self):
+        return self.r.get('ws_lang')
 
-        if not file_url:
-            raise RuntimeError(f'Cannot find file: {r.get("file")}')
+    def construct_dl_def(self):
 
-        logging.debug("Local file size {} MB: {}".format(
-            os.path.getsize(file_url) // (1024 * 1024), file_url))
-    else:
+        if self.dl_def:
+            return self.dl_def
 
-        # first see if we have a handy local file
-        if args.file_dir:
-            candidate_fns = itertools.product(
-                [
-                    utils.source.sanitise_id(r.get('id')),
-                    r.get('filename')
-                ],
-                ['.djvu', 'pdf']
-            )
+        mapped_row = self.r
+        if not self.filename:
+            filename = mapped_row.get('filename')
+        if not filename:
+            filename = mapped_row.get('id')
 
-            for root, ext in candidate_fns:
-                fn = os.path.join(args.file_dir, root + ext)
-                if os.path.isfile(fn):
-                    file_url = fn
-                    break
+        source = mapped_row.get('source')
 
-        if not file_url:
-            if source.can_download_file():
-                file_url = source.get_file_url()
+        dl_def = dl_book.DlDef(source, mapped_row.get('id'), filename)
+
+        root, ext = os.path.splitext(filename)
+
+        sanitised_id = dl_def.id.replace('/', '_')
+
+        if ext.lower() in ['.pdf', '.djvu', '.tiff']:
+            odir = root
+        elif dl_def.filename:
+            odir = dl_def.filename
+        else:
+            odir = sanitised_id
+
+        self.dl_dir = os.path.join(self.basedir, odir)
+
+        if mapped_row.get('access') == 'us':
+            dl_def.use_proxy = True
+
+        if mapped_row.get_bool('dl', False):
+            dl_def.force_dl = True
+
+        if mapped_row.get_bool('regen', False):
+            dl_def.regenerate = True
+
+        dl_def.skip_existing = not self.redownload_existing
+
+        dl_def.exclude_pages = mapped_row.get_ranges('rm_pages')
+        dl_def.include_pages = mapped_row.get_ranges('only_pages')
+
+        self.dl_def = dl_def
+        return dl_def
+
+    def set_pagelist(self):
+        r = self.r
+        if not r.get('pagelist'):
+            dl_def = self.construct_dl_def()
+            if dl_def is not None:
+                try:
+                    pagelist = dl_def.get_pagelist()
+                except:
+                    logging.error("Failed to get pagelist")
+                    pagelist = None
+
+                inc_pages = None
+                if r.get('only_pages'):
+                    inc_pages = utils.range_selection.get_range_selection(
+                        r.get('only_pages').split(','))
+
+                exc_pages = None
+                if r.get('rm_pages'):
+                    exc_pages = utils.range_selection.get_range_selection(
+                        r.get('rm_pages').split(','))
+
+                if pagelist is not None:
+                    pagelist.strip_pages(inc_pages, exc_pages)
+
             else:
-                logging.error('No local file and the source cannot provide one')
-
-    logging.debug("File source: {}".format(file_url))
-
-    root, ext = os.path.splitext(file_url)
-
-    dl_file = None
-    if r.get_bool('dl', False) and file_url.startswith("http"):
-        # actually download the file
-        logging.debug("Downloading file: {}".format(file_url))
-
-        req = requests.get(file_url)
-        req.raise_for_status()
-
-        dl_file = "/tmp/dlfile" + ext
-
-        with open(dl_file, "wb") as tf:
-            tf.write(req.content)
-        logging.debug("Wrote file to: {}".format(dl_file))
-
-        file_url = dl_file
-
-    if dl_file and r.get('rem_pg'):
-        pages = split_any(r.get('rem_pg'), [" ", ","])
-
-        print(pages)
-        pages = [int(x) for x in pages]
-        pages.sort(reverse=True)
-
-        for p in pages:
-            if ext == ".djvu":
-                cmd = ["djvm", "-d", dl_file, str(p)]
-                logging.debug("Deleting page {}".format(p))
-                subprocess.call(cmd)
-
-    if not r.get('pagelist'):
-        if source is not None:
-            try:
-                pagelist = source.get_pagelist()
-                pagelist.clean_up()
-            except:
-                logging.error("Failed to get pagelist")
-                raise
                 pagelist = None
 
-        else:
-            pagelist = None
+            if not r.get("img_pg"):
+                r.set('img_pg', '')
 
-        if not r.get("img_pg"):
-            r.set('img_pg', '')
-
-        if pagelist is not None:
-
-            page_offset = 0
-            if r.get('pg_offset'):
-                page_offset = int(r.get('pg_offset'))
-
-            if not r.get('img_pg') and pagelist.title_index is not None:
-                r.set('img_pg', str(pagelist.title_index - page_offset))
-
-            r.set('pagelist', pagelist.to_pagelist_tag(page_offset))
-        else:
-            r.set('pagelist', '<pagelist/>')
-
-    # if not r.get('oclc'):
-    #     r.set('oclc', source.get_oclc())
-
-    if not r.get('year'):
-        r.set('year', r.get('date'))
-
-    if not r.get('filename').lower().endswith(ext.lower()):
-        r.set('filename', r.get('filename') + ext)
-
-    ws_site = pywikibot.Site(args.ws_language, "wikisource")
-
-    upload_to_ws = r.get_bool('to_ws', False)
-
-    if upload_to_ws:
-        upload_site = ws_site
-    else:
-        upload_site = pywikibot.Site("commons", "commons")
-
-    get_wd_site_info(ws_site, r, 'author')
-    get_wd_site_info(ws_site, r, 'editor')
-    get_wd_site_info(ws_site, r, 'translator')
-
-    filetype = ext[1:]
-    desc = make_description(r, filetype)
-    print(desc)
-
-    # filter out nasties in the filename
-    cms_fn = r.get('filename').replace("—", "-").replace("–", "-")
-    filepage = pywikibot.FilePage(upload_site, "File:" + cms_fn)
-
-    logging.debug(filepage)
-
-    do_upload = True
-
-    try:
-        filepage.get_file_url()
-        has_image_info = filepage.exists()
-    except pywikibot.exceptions.PageRelatedError:
-        has_image_info = False
-
-    if has_image_info and not args.skip_upload:
-        logging.warning("File page exists: {}".format(cms_fn))
-
-        if args.exist_action == 'skip':
-            logging.info("Skipping file upload")
-            do_upload = False
-
-        if args.exist_action == 'update':
-            filepage.text = desc
-            summary = "Updating description from batch upload data"
-            if not args.dry_run:
-                filepage.save(
-                    summary=summary,
-                    ignore_warnings=handle_write_filepage_warning
-                )
+            if pagelist is None:
+                r.set('pagelist', '<pagelist/>')
             else:
-                logging.info(f"Dry run: skipped description update, would have saved with message '{summary}'")
+                page_offset = 0
+                if r.get('pg_offset'):
+                    page_offset = int(r.get('pg_offset'))
 
-            do_upload = False
+                if not r.get('img_pg') and pagelist.title_index is not None:
+                    r.set('img_pg', str(pagelist.title_index - page_offset))
 
-    phab_id = None
-    if do_upload and not args.skip_upload:
+                r.set('pagelist', pagelist.to_pagelist_tag(page_offset))
 
+class ScanUploader():
+
+    def __init__(self, file_dir, args):
+        self.use_proxy = False
+
+        self.file_dir = file_dir
+
+        self.upload_file = True
+        self.write_index = True
+
+        self.args = args
+
+        self.defaults = {
+            'ws_lang': 'en'
+        }
+
+    def find_local_file(self, row):
+
+        # first see if we have a handy local file
+        if self.file_dir:
+            candidate_fns = itertools.product(
+                ['.djvu', '.pdf'],
+                [
+                    utils.source.sanitise_id(row.get('id')),
+                    row.get('filename')
+                ],
+            )
+
+            for ext, root in candidate_fns:
+                fn = os.path.join(self.file_dir, root + ext)
+                if os.path.isfile(fn):
+                    return fn
+
+        return None
+
+    def find_better_url(self, r):
+
+        tf_root = os.getenv('TOOLFORGE_FILE_STORE_URL')
+
+        candidate_exts = ['.djvu', '.pdf']
+        candidate_roots = [r.get('id'), r.get('filename')]
+
+        for ext, root in itertools.product(candidate_exts, candidate_roots):
+            url = tf_root.rstrip('/') + '/' + root + ext
+            r = requests.head(url)
+
+            if r.status_code == 200:
+                logging.debug(f'Found better URL: {url}')
+                return url
+
+        return None
+
+    def acquire_file(self, uctx):
+        """
+        Invoke DL multi for the file download/conversion
+        """
+
+        dl_def = uctx.construct_dl_def()
+        uctx.downloaded = False
+        if uctx.skip_dl:
+            uctx.downloaded = True
+        else:
+            # trigger download, get output dir
+            uctx.downloaded = dl_def.do_download(uctx.dl_dir)
+
+        logging.debug(f'Acquired file(s): {uctx.downloaded}')
+
+    def convert_file(self, uctx):
+        output_file = uctx.get_output_file()
+
+        if (uctx.downloaded and
+            os.path.isfile(uctx.downloaded) and
+            os.path.splitext(uctx.downloaded)[1] in ['.djvu', '.pdf']):
+
+            logging.debug('Skipping conversion because '
+                          f'the source provided the file: {uctx.downloaded}')
+
+            logging.debug('Downloaded: ' + uctx.downloaded)
+            logging.debug('Output: ' + output_file)
+
+            # we haven't got an extension yet
+            if os.path.isdir(output_file):
+                output_file += os.path.splitext(uctx.downloaded)[1]
+
+            if uctx.downloaded != output_file:
+                logging.debug(f'Moving to {output_file}')
+                shutil.move(uctx.downloaded, output_file)
+            return output_file
+
+        if uctx.skip_convert:
+            logging.debug('Skipping conversion due to --skip-convert')
+            return output_file
+
+        if not uctx.downloaded:
+            logging.debug("Skipping convert: images not downloaded OK")
+            return None
+
+        if re.match(r'https?://', uctx.downloaded):
+            logging.debug('No conversion required for URL source')
+            return uctx.downloaded
+
+        # we have to convert: assume this is going to a DJVU
+
+        output_file = uctx.get_output_file() + ".djvu"
+        cmd = ["./make_document.py",
+                "-i", uctx.dl_dir,
+                "-o", output_file,
+                "-R",
+                "-T", str(self.args.conversion_threads)]
+
+        if uctx.tmp_dir is not None:
+            cmd += ['-t', uctx.tmp_dir]
+
+        if not uctx.keep_temp:
+            cmd.append("-D")
+
+        cmd += uctx.get_conversion_opts()
+
+        if uctx.target_size is not None:
+            cmd += ["-s", str(uctx.target_size)]
+
+        # very verbose also converts in verbose mode
+        if self.args.verbose > 1:
+            cmd.append("-v" * self.args.verbose)
+
+        logging.debug(cmd)
+        subprocess.check_call(cmd)
+
+        return output_file
+
+    def set_row_defaults(self, r):
+        if not r.get('ws_lang'):
+            r.set('ws_lang', self.defaults['ws_lang'])
+
+    def handle_row(self, r):
+
+        if r.get_bool('skip', False):
+            logging.debug("Skipping row")
+            return False
+
+        basedir = os.getenv('WSTOOLS_OUTDIR')
+        tmp_dir = "tmp"
+
+        uctx = UploadContext(r, basedir)
+
+        uctx.tmp_dir = os.path.join(basedir, tmp_dir)
+        uctx.keep_temp = self.args.keep_temp
+        uctx.skip_convert = self.args.skip_convert
+
+        self.set_row_defaults(r)
+
+        if r.get('size'):
+            uctx.target_size = int(r.get('size'))
+        elif self.args.target_size is not None:
+            uctx.target_size = self.args.target_size
+
+        if self.args.redownload_existing:
+            uctx.redownload_existing = self.args.redownload_existing
+
+        if self.args.hathi_direct is not None:
+            uctx.hathi_direct = self.args.hathi_direct
+
+        file_url = None
+
+        if r.get('file'):
+
+            # use local files if given
+            file_url = r.get('file')
+
+            if os.path.isdir(file_url):
+                # path exists, but it's just a dir, so magically guess
+                file_url = find_file(r, file_url)
+
+            elif self.file_dir and not os.path.isabs(file_url):
+                file_url = os.path.join(self.file_dir, file_url)
+
+            # no actual file is OK if we're not going to upload it
+            if not self.args.skip_upload and not file_url:
+                raise RuntimeError(f'Cannot find file: {r.get("file")}')
+
+            if file_url and os.path.isfile(file_url):
+                logging.debug("Local file size {} MB: {}".format(
+                    os.path.getsize(file_url) // (1024 * 1024), file_url))
+        else:
+            # first see if we have a handy local file
+            file_url = self.find_local_file(r)
+
+            if not file_url:
+                # first, check for better urls
+                file_url = self.find_better_url(r)
+
+            if not file_url:
+                # we have no local URL, so now we should construct a download and
+                # do it
+                self.acquire_file(uctx)
+                output_file = self.convert_file(uctx)
+
+                if not output_file:
+                    raise RuntimeError('No local file and the source cannot provide one')
+
+                file_url = output_file
+
+        logging.debug("File source: {}".format(file_url))
+
+        _, ext = os.path.splitext(file_url)
+
+        dl_file = None
+        if r.get_bool('dl', False) and file_url.startswith("http"):
+            # actually download the file
+            logging.debug("Downloading file: {}".format(file_url))
+
+            req = requests.get(file_url)
+            req.raise_for_status()
+
+            dl_file = "/tmp/dlfile" + ext
+
+            with open(dl_file, "wb") as tf:
+                tf.write(req.content)
+            logging.debug("Wrote file to: {}".format(dl_file))
+
+            file_url = dl_file
+
+        if dl_file and r.get('rem_pg'):
+            pages = split_any(r.get('rem_pg'), [" ", ","])
+            pages = [int(x) for x in pages]
+            pages.sort(reverse=True)
+
+            for p in pages:
+                if ext == ".djvu":
+                    cmd = ["djvm", "-d", dl_file, str(p)]
+                    logging.debug("Deleting page {}".format(p))
+                    subprocess.call(cmd)
+
+        uctx.set_pagelist()
+
+        # if not r.get('oclc'):
+        #     r.set('oclc', source.get_oclc())
+
+        upload_to_ws = r.get_bool('to_ws', False)
+        ws_lang = r.get('ws_lang')
+        ws_site = pywikibot.Site(ws_lang, "wikisource")
+
+        if upload_to_ws:
+            uctx.upload_site = ws_site
+        else:
+            uctx.upload_site = pywikibot.Site("commons", "commons")
+
+        if not r.get('year'):
+            r.set('year', r.get('date'))
+
+        autocats = []
+        get_wd_site_info(ws_site, r, 'author', autocats)
+        get_wd_site_info(ws_site, r, 'editor', autocats)
+        get_wd_site_info(ws_site, r, 'translator', autocats)
+        get_wd_site_info(ws_site, r, 'illustrator', autocats)
+
+        if not r.get('filename'):
+            r.set('filename', get_filename(r, ws_lang))
+
+        if not r.get('filename').lower().endswith(ext.lower()):
+            r.set('filename', r.get('filename') + ext)
+
+        if not r.get('commonscats'):
+            r.set('commonscats', '/'.join(autocats))
+
+        filetype = ext[1:]
+        desc = make_description(r, filetype)
+        print(desc)
+
+        uctx.description = desc
+
+        # filter out nasties in the filename
+        cms_fn = sanitise_filename(r.get('filename'))
+        filepage = pywikibot.FilePage(uctx.upload_site, "File:" + cms_fn)
+
+        do_upload = True
+
+        try:
+            filepage.get_file_url()
+            has_image_info = filepage.exists()
+        except pywikibot.exceptions.PageRelatedError:
+            has_image_info = False
+
+        if has_image_info and not self.args.skip_upload:
+            logging.warning("File page exists: {}".format(cms_fn))
+
+            if self.args.exist_action == 'skip':
+                logging.info('Skipping file upload for {filepage}')
+                do_upload = False
+            elif self.args.exist_action == 'update':
+                filepage.text = desc
+                summary = 'Updating description from batch upload data'
+                if not self.args.dry_run:
+                    logging.info(f'Writing file info: {filepage}')
+                    filepage.save(
+                        summary=summary,
+                        ignore_warnings=handle_write_filepage_warning
+                    )
+                else:
+                    logging.info(f"Dry run: skipped description update, would have saved with message '{summary}'")
+
+                do_upload = False
+
+        phab_id = None
+        if do_upload and self.upload_file:
+            self.do_upload_file(uctx, file_url, filepage)
+
+        self.create_index_page(r, ws_site, cms_fn, ws_lang, filetype, phab_id)
+
+    def do_upload_file(self, uctx, file_url, filepage):
         logging.debug("Uploading {} -> {}".format(file_url, filepage))
+
+        cms_fn = filepage.title()
 
         file_size = None
         if os.path.isfile(file_url):
             file_size = os.path.getsize(file_url)
             logging.debug(f'File size: {file_size // (1024 * 1024)}MB')
 
-        if args.dry_run:
-            logging.info(f"Dry run: skipped file upload to File{cms_fn}")
+        if self.args.dry_run:
+            logging.info(f"Dry run: skipped file upload to {filepage}")
         else:
-            wiki_uploader = StandardWikiUpload(upload_site)
-            wiki_uploader.chunk_size = args.chunk_size
-            wiki_uploader.simulate_stash_failure = args.simulate_stash_failure
+            wiki_uploader = StandardWikiUpload(uctx.upload_site)
+            wiki_uploader.chunk_size = self.args.chunk_size
+            wiki_uploader.simulate_stash_failure = self.args.simulate_stash_failure
             wiki_uploader.write_filepage_on_failure = True
 
-            uploaded_ok = wiki_uploader.upload(cms_fn, file_url, desc)
+            uploaded_ok = wiki_uploader.upload(filepage.title(with_ns=False),
+                                               file_url,
+                                               uctx.description)
 
             if not uploaded_ok:
                 logging.debug('Normal Wiki upload failed')
                 ssu_url = None
-                if args.internet_archive:
-                    tf_upload = UploadViaToolforgeSsh(upload_site)
-                    tf_upload.upload(cms_fn, file_url, desc)
+                if self.args.internet_archive:
+                    tf_upload = UploadViaToolforgeSsh(uctx.upload_site)
+                    tf_upload.upload(cms_fn, file_url, uctx.description)
 
-                if args.phab_ssu:
+                if self.args.phab_ssu:
+                    phab_id = self.raise_phab_ticket(
+                        ssu_url, uctx.ws_lang(), cms_fn, uctx.description, file_size)
 
-                    projs = []
-                    extra_proj = os.getenv('PHAB_SSU_EXTRA_PROJECTS')
-                    if extra_proj:
-                        projs.append(extra_proj)
+    def raise_phab_ticket(self, ssu_url, lang, filename, description, file_size):
 
-                    parent_task = os.getenv('PHAB_PARENT_TASK')
+        projs = []
+        extra_proj = os.getenv('PHAB_SSU_EXTRA_PROJECTS')
+        if extra_proj:
+            projs.append(extra_proj)
 
-                    if not ssu_url:
-                        raise RuntimeError("No URL for server-side-upload!")
+        parent_task = os.getenv('PHAB_PARENT_TASK')
 
-                    phab_res = utils.phab_tasks.request_server_side_upload(
-                        ssu_url,
-                        wiki=args.ws_language + 'wikisource',
-                        filename=cms_fn,
-                        username=os.getenv('PHAB_USERNAME'),
-                        file_desc=desc,
-                        t278104=True,
-                        extra_projs=projs,
-                        parent_task=parent_task,
-                        filesize=file_size,
-                        extra=None)
+        if not ssu_url:
+            raise RuntimeError("No URL for server-side-upload!")
 
-                    phab_id = phab_res['result']['object']['id']
+        phab_res = utils.phab_tasks.request_server_side_upload(
+            ssu_url,
+            wiki=lang + 'wikisource',
+            filename=filename,
+            username=os.getenv('PHAB_USERNAME'),
+            file_desc=description,
+            t278104=True,
+            extra_projs=projs,
+            parent_task=parent_task,
+            filesize=file_size,
+            extra=None)
 
-                    logging.info(f'Raised phab ticket T{phab_id}')
+        phab_id = phab_res['result']['object']['id']
 
-    indexpage = pywikibot.proofreadpage.IndexPage(ws_site, title='Index:' + cms_fn)
+        logging.info(f'Raised phab ticket T{phab_id}')
+        return phab_id
 
-    index_content = make_index_content(r, filetype, phab_id=phab_id,
-                                       lang=args.ws_language)
-    print(index_content)
+    def create_index_page(self, r, site, cms_fn, lang, filetype, phab_id):
 
-    summary = "Creating index page to match file"
+        indexpage = pywikibot.proofreadpage.IndexPage(site, title='Index:' + cms_fn)
 
-    if args.skip_index:
-        logging.debug(f'Skipping index creation for: {indexpage}')
-    elif indexpage.exists() and args.exist_action == 'skip':
-        logging.debug(f'Skipping index creation for existing page: {indexpage}')
-    else:
-        indexpage.text = index_content
-        if not args.dry_run:
-            indexpage.save(summary=summary, botflag=args.bot_flag)
+        index_content = make_index_content(r, filetype, phab_id=phab_id,
+                                           lang=lang)
+        print(index_content)
+
+        summary = 'Creating index page to match file' + get_behalf(r)
+
+        if not self.write_index:
+            logging.debug(f'Skipping index creation for: {indexpage}')
+        elif indexpage.exists() and self.args.exist_action == 'skip':
+            logging.debug(f'Skipping index creation for existing page: {indexpage}')
         else:
-            logging.info(f"Dry run: skipped index update, would have saved with summary '{summary}'")
+            indexpage.text = index_content
+            if not self.args.dry_run:
+                indexpage.save(summary=summary, botflag=self.args.bot_flag)
+            else:
+                logging.info("Dry run: skipped index update, "
+                             f"would have saved with summary '{summary}'")
 
-    return True
+        return True
 
-class DataRow():
+    def upload_row(self, mapped_row):
+        # set defaults
+        mapped_row.set_default('language', 'en')
+        mapped_row.set_default('ws', 'en')
 
-    def __init__(self, col_map, row):
+        # data normalisation
+        mapped_row.apply('source', str.lower)
 
-        mapped_row = {}
+        print(mapped_row.dump())
 
-        for col in col_map:
-            value = row[col_map[col]].strip()
+        return self.handle_row(mapped_row)
 
-            # data normalisation
-            if col.lower() == 'source':
-                value = value.lower()
+    def upload(self, rows, limit=None):
 
-            mapped_row[col.lower()] = value
-        self.r = mapped_row
+        uploaded_count = 0
+        row_idx = 1
 
-    def get(self, key):
+        for row in rows:
 
-        if key not in self.r:
-            return None
-        return self.r[key].strip()
+            row_idx += 1
 
-    def set(self, key, value):
-        self.r[key] = value
+            handled = False
+            try:
+                handled = self.upload_row(row)
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                traceback.print_exception(e)
+                logging.error(f'Failed to upload row: {row.index}')
+                pass
 
-    def get_bool(self, key, default):
+            if handled:
+                uploaded_count += 1
 
-        v = self.get(key)
-
-        if not v:
-            return default
-
-        return v[0].lower() in ['y', 't', '1']
+            if limit is not None and limit == uploaded_count:
+                logging.debug(f'Reached upload limit: {limit}')
+                break
 
 
 def main():
@@ -1034,6 +1520,28 @@ def main():
                         help='Rows to process')
     parser.add_argument('-n', '--dry-run', action='store_true',
                         help='Do a dry run')
+    parser.add_argument('-F', '--file-dir',
+                        help='The directory local files are loaded relative to')
+
+    # DL options
+    parser.add_argument('-x', '--redownload-existing', action='store_true',
+                        help='Redownload existing image files')
+    parser.add_argument('--hathi-direct', action='store_true',
+                        help='For Hathi downloads, do not use the Data API')
+    parser.add_argument('-p', '--proxy', action='store_true',
+                        help='Use configured proxies')
+
+    # Conversion options
+    parser.add_argument('-S', '--target-size', type=int,
+                        help='Target file size in MB (approximate)')
+    parser.add_argument('-t', '--conversion-threads', type=int,
+                        help='Number of conversion threads')
+    parser.add_argument('-k', '--keep-temp', action='store_true',
+                        help='Keep temporary converted files')
+    parser.add_argument('-C', '--skip-convert', action='store_true',
+                        help='Skip conversion if possible')
+
+    # Upload options
     parser.add_argument('-U', '--skip_upload', action='store_true',
                         help='Skip the file upload')
     parser.add_argument('-I', '--skip_index', action='store_true',
@@ -1050,10 +1558,6 @@ def main():
                         help='What to do if a file exists: skip, update (info only) or overwrite')
     parser.add_argument('-b', '--bot-flag', action='store_true',
                         help='Use a bot flag for the index page creation')
-    parser.add_argument('-F', '--file-dir',
-                        help='The directory local files are loaded relative to')
-    parser.add_argument('-p', '--proxy', action='store_true',
-                        help='Use configured proxies')
     parser.add_argument('-J', '--internet-archive', action='store_true',
                         help='Upload to the Internet Archive')
     parser.add_argument('-P', '--phab-ssu', action='store_true',
@@ -1092,66 +1596,33 @@ def main():
 
     pywikibot.config.put_throttle = args.throttle
 
+    args.conversion_threads = args.conversion_threads or max(1, multiprocessing.cpu_count() - 2)
+
     if not args.file_dir:
         fdir = os.getenv('WSTOOLS_UPLOAD_SOURCE_DIR')
 
         if fdir:
             args.file_dir = fdir
 
-    if not os.path.isabs(args.data_file):
+    args.data_file = utils.choose_file.choose_file(args.data_file,
+        [os.getenv('WSTOOLS_DATA_FILE_DIR')]
+    )
 
-        fdir = os.getenv('WSTOOLS_DATA_FILE_DIR')
-
-        if fdir:
-            args.data_file = os.path.join(fdir, args.data_file)
-
-    print(args.data_file)
+    logging.debug(f'Data file: {args.data_file}')
 
     # requests_cache.install_cache('uploadscans')
 
     pywikibot.config.maxlag = args.max_lag
+    pywikibot.config.socket_timeout = (20, 200)
 
-    output = StringIO()
+    rows = utils.row_map.get_rows(args.data_file, args.rows)
 
-    Xlsx2csv(args.data_file, skip_trailing_columns=True,
-             skip_empty_lines=True, outputencoding="utf-8").convert(output)
+    su = ScanUploader(args.file_dir, args)
 
-    output.seek(0)
+    su.upload_file = not args.skip_upload
+    su.write_index = not args.skip_index
 
-    reader = csv.reader(output, delimiter=',', quotechar='"')
-
-    head_row = next(reader)
-    col_map = parse_header_row(head_row)
-
-    pywikibot.config.socket_timeout = (10, 200)
-
-    rows = utils.range_selection.get_range_selection(args.rows)
-
-    uploaded_count = 0
-    row_idx = 1
-
-    for row in reader:
-
-        row_idx += 1
-
-        if rows is not None and row_idx not in rows:
-            logging.debug("Skip row {}".format(row_idx))
-            continue
-
-        mapped_row = DataRow(col_map, row)
-
-        # set defaults
-        if not mapped_row.get('language'):
-            mapped_row.set('language', 'en')
-
-        handled = handle_row(mapped_row, args)
-
-        if handled:
-            uploaded_count += 1
-
-        if args.number is not None and args.number == uploaded_count:
-            logging.debug("Reached upload limit: {}".format(args.number))
-            break
+    su.upload(rows, args.number)
 
 
 if __name__ == "__main__":

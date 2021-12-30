@@ -1,0 +1,9 @@
+-prefixindex:Tarzan and the Golden Lion - McClurg1923.pdf
+-namespace:Page
+-summary:Convert curly-quotes to straight quotes for consistency in this work
+-regex
+-pt:1
+[“”]
+"
+[‘’]
+'

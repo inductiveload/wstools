@@ -8,6 +8,12 @@ def get_range_selection(page_arr, last=None, unique=True):
     individual pages
     """
 
+    if not page_arr:
+        return []
+
+    if isinstance(page_arr, str):
+        page_arr = [x.strip() for x in page_arr.split(',')]
+
     rows = []
     for r in page_arr:
         m = re.match(r'(\d+)([+-])(\d+)', r)

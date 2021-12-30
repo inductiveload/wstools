@@ -10,6 +10,9 @@ import requests
 import urllib.parse
 import io
 import utils.update_bar
+import utils.cache
+import utils.pagelist
+import tqdm
 
 module_logger = logging.getLogger('wstools.source')
 
@@ -19,15 +22,15 @@ def dl_img(ofprefix, source, sequence):
     img_data, content_type = source.get_image(sequence)
 
     if (len(img_data) == 0):
-        raise(ValueError("zero-length image data for sequence: {}".format(sequence)))
+        raise ValueError(f'Zero-length image data for sequence: {sequence}')
 
     ext = MIME.mime_to_ext(content_type)
 
     ofname = ofprefix + ext
 
-    module_logger.debug("Saving image for seq {} to {}".format(sequence, ofname))
+    module_logger.debug(f'Saving image for seq {sequence} to {ofname}')
 
-    with open(ofname, "wb") as of:
+    with open(ofname, 'wb') as of:
         of.write(img_data)
 
 
@@ -37,14 +40,16 @@ def dl_ocr(ofprefix, source, sequence):
 
     ofname = ofprefix + ".hocr"
 
-    module_logger.debug("Saving OCR for seq {} to {}".format(sequence, ofname))
+    module_logger.debug('Saving OCR for seq {sequence} to {ofname}')
 
-    with open(ofname, "wb") as of:
+    with open(ofname, 'wb') as of:
         of.write(ocr_data)
 
 
 def have_image_with_prefix(prefix):
-    return have_file_with_prefix(prefix, MIME.image_exts())
+    have = have_file_with_prefix(prefix, MIME.image_exts())
+    # print(f'have {prefix}: {have}')
+    return have
 
 
 def have_ocr_with_prefix(prefix):
@@ -62,7 +67,8 @@ def have_file_with_prefix(prefix, ext_list):
 
 
 def dl_to_directory(source, output_dir, skip_existing=True,
-                    ocr=True, images=True, make_dirs=True):
+                    ocr=True, images=True, make_dirs=True,
+                    include_pages=None, exclude_pages=None):
 
     if not os.path.exists(output_dir):
         if make_dirs:
@@ -70,11 +76,15 @@ def dl_to_directory(source, output_dir, skip_existing=True,
         else:
             raise ValueError("Directory missing, but make_dirs not set")
 
-    num_pages = source.get_num_pages()
+    if include_pages:
+        pages = include_pages
+    else:
+        pages = range(1, source.get_num_pages() + 1)
 
-    print(num_pages)
+    if exclude_pages:
+        pages = [p for p in pages if p not in exclude_pages]
 
-    for i in range(1, num_pages + 1):
+    for i in tqdm.tqdm(pages, desc="↓"):
 
         esc_id = sanitise_id(source.get_id())
 
@@ -107,7 +117,17 @@ def sanitise_id(id):
     return id.replace('/', '_').replace(':', '_').replace('$', '_')
 
 
-def get_from_url(url, session=None, name=None):
+def get_from_url(url, session=None, name=None,
+                 chunk_size=1024*1024*1,
+                 cache_key=None):
+
+    cache = None
+    if cache_key:
+        cache = utils.cache.Cache(os.getenv('IA_DOWNLOAD_CACHE'))
+        cached = cache.get_file(cache_key)
+
+        if cached:
+            return open(cached, 'rb')
 
     if session is None:
         session = requests.Session()
@@ -125,16 +145,22 @@ def get_from_url(url, session=None, name=None):
         print(urlo, url)
 
         try:
-            name = urlo.path.split['/'][-1]
+            name = urlo.path.split('/')[-1]
         except IndexError:
             pass
 
     buffer = io.BytesIO()
 
     with utils.update_bar.get_download_bar(name, clen) as bar:
-        for data in r.iter_content(chunk_size=1024*1024*1):
+        for data in r.iter_content(chunk_size=chunk_size):
             size = buffer.write(data)
             bar.update(size)
+
+    # be kind: rewind
+    buffer.seek(0)
+
+    if cache:
+        cache.cache_file(buffer, cache_key)
 
     return buffer
 
@@ -147,5 +173,14 @@ class Source():
         """
         return False
 
-    def normalise_id(self):
+    def get_id(self):
+        """
+        Get the (normalised) ID for the work
+        """
         raise NotImplementedError
+
+    def get_pagelist(self) -> utils.pagelist.PageList:
+        """
+        Some sources can provide a pagelist
+        """
+        return None

@@ -124,6 +124,40 @@ class NewTextProcessor():
         return data
 
 
+class JsonUpdater():
+
+    def __init__(self, site):
+        self.site = site
+
+
+    def update(self, entries, year, month, force=False):
+
+        page_title = f"Template:New texts/data/{year}.json"
+        page = pywikibot.Page(self.site, page_title)
+
+        data = json.loads(page.text)
+
+        if month not in data:
+            data[month] = entries
+        else:
+            data[month] = entries + data[month]
+
+        new_text = json.dumps(data,
+                              ensure_ascii=False,
+                              indent='    ')
+
+        pywikibot.showDiff(page.text, new_text)
+
+        if not force:
+            write = pywikibot.input_yn('Write?')
+        else:
+            write = True
+
+        if write and year and month:
+            page.text = new_text
+            page.save(f'Import texts for {year}-{month}')
+        # print(new_text)
+
 def main():
 
     parser = argparse.ArgumentParser(description='')
@@ -133,21 +167,42 @@ def main():
                         help='The page to read data from')
     parser.add_argument('-l', '--lang', default='en',
                         help='Wikisource lang code')
-    parser.add_argument('-s', '--section', default='json',
+    parser.add_argument('-s', '--section',
                         help='The section filter')
+    parser.add_argument('-w', '--write',
+                        help='Attempt to write to the json page on-wiki')
     args = parser.parse_args()
+
+    pywikibot._config.put_throttle = 0
 
     site = pywikibot.Site(args.lang, 'wikisource')
     page = pywikibot.Page(site, args.page)
 
     # log_level = logging.DEBUG if args.verbose else logging.INFO
     # logging.basicConfig(level=log_level)
+    updater = JsonUpdater(site)
+
+    if args.section:
+        sections = [args.section]
+    else:
+        result = pywikibot.textlib.extract_sections(text=page.text, site=site)
+        print(result.sections)
+        sections = [s[0].strip('=').strip() for s in result.sections if re.match('=+ *\d{4}-\d{1,2}', s[0] )]
 
     ntp = NewTextProcessor()
-    data = ntp.run(page, args.section)
-    s = json.dumps([data], indent=4)
-    print(s)
 
+    for section in sections:
+
+        m = re.match(r'(\d{4})-(\d{1,2})', section)
+        if m:
+            year = m.group(1)
+            month = m.group(2)
+        else:
+            year = None
+            month = None
+
+        data = ntp.run(page, section)
+        updater.update(data, year, month)
 
 if __name__ == "__main__":
     main()

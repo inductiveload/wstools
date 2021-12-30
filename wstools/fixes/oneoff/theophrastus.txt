@@ -1,0 +1,7 @@
+-prefixindex:Impressions of Theophrastus Such (2nd ed., 1879)/
+-summary:Use relative links
+-pt:0
+[[Impressions of Theophrastus Such]]
+[[../]]
+[[Impressions of Theophrastus Such/
+[[../

@@ -8,6 +8,8 @@ import utils.pagelist
 
 import utils.source
 
+import internetarchive
+
 
 class IaSource(utils.source.Source):
 
@@ -15,6 +17,10 @@ class IaSource(utils.source.Source):
         self.id = self._normalise_id(id)
         self.filelist = None
         self.prefer_pdf = False
+
+        self._scandata_cache = None
+
+        self.item = internetarchive.get_item(self.id)
 
     def can_download_file(self):
         return True
@@ -40,8 +46,7 @@ class IaSource(utils.source.Source):
 
         tree = etree.fromstring(r.content)
 
-        if not self.filelist:
-            self.filelist = tree
+        self.filelist = tree
         return tree
 
     def _get_files_with_format(self, fmt):
@@ -86,29 +91,84 @@ class IaSource(utils.source.Source):
 
         return url
 
+    def _get_file_url(self, fmt):
+        fileinfo = self._get_files_with_format(fmt)
+
+        if fileinfo is None or len(fileinfo) == 0:
+            return None, None
+
+        name = fileinfo[0].attrib['name']
+        url = f'https://archive.org/download/{self.id}/{name}'
+
+        return url, fileinfo
+
+    def get_file_url(self, fmt):
+        url, _ = self._get_file_url(fmt)
+        return url
+
+    def get_file(self, fmt):
+        url, fileinfo = self._get_file_url(fmt)
+
+        size = int(fileinfo[0].find('size').text)
+        name = fileinfo[0].attrib['name']
+
+        logging.debug(f'Downloading {fmt}: {url}')
+        logging.debug(f' Size: {size // (1024 * 1024)}MB')
+
+        return utils.source.get_from_url(url, name=name, cache_key='ia-' + name)
+
+    def get_jp2_zip(self):
+        return self.get_file("Single Page Processed JP2 ZIP")
+
+    def get_jp2_zip_name(self):
+        _, fileinfo = self._get_file_url("Single Page Processed JP2 ZIP")
+        return fileinfo[0].attrib['name']
+
     def has_djvu(self):
 
         djvu_fileinfo = self._get_files_with_format("DjVu")
         return djvu_fileinfo is not None and len(djvu_fileinfo) > 0
 
-    def get_jp2_zip(self):
+    def get_djvu(self):
+        return self.get_file("DjVu")
 
-        jp2_zip_fileinfo = self._get_files_with_format("Single Page Processed JP2 ZIP")
+    def get_jpg_list(self, scale):
 
-        if not jp2_zip_fileinfo:
-            return None
+        urls = []
 
-        jp2_zip_name = jp2_zip_fileinfo[0].attrib['name']
-        jp2_zip_size = int(jp2_zip_fileinfo[0].find('size').text)
+        server = self.item.item_metadata['d1']
+        img_dir = self.item.item_metadata['dir']
 
-        url = f'https://archive.org/download/{self.id}/{jp2_zip_name}'
+        for page in self.item.item_metadata['page_numbers']['pages']:
+            index = page['leafNum']
+            url = 'https://' + server + '/BookReader/BookReaderImages.php?' + \
+                f'zip={img_dir}/{self.id}_jp2.zip' + \
+                f'&file={self.id}_jp2/{self.id}_{index:04}.jp2' + \
+                f'&id={self.id}&scale={scale}&rotate=0'
+            urls.append({
+                'url': url,
+                'index': index,
+                'name': f'{self.id}_{index:04}.jpg'
+            })
+        return urls
 
-        logging.debug(f'Downloading JP2 zip: {jp2_zip_name}')
-        logging.debug(f' Size: {jp2_zip_size // (1024 * 1024)}MB')
+    def get_file_indexes_not_in_output(self):
 
-        return utils.source.get_from_url(url, name=jp2_zip_name)
+        sd = self._get_scandata()
+
+        indexes = []
+
+        for page in sd.findall('.//{*}pageData/{*}page'):
+            if not self.page_in_accessformats(page):
+                index = int(page.attrib['leafNum'])
+                indexes.append(index)
+
+        return indexes
 
     def _get_scandata(self):
+
+        if self._scandata_cache:
+            return self._scandata_cache
 
         scandata_name = self._get_files_with_format("Scandata")
 
@@ -131,7 +191,18 @@ class IaSource(utils.source.Source):
 
         xml = etree.fromstring(r.content)
 
-        return xml
+        self._scandata_cache = xml
+
+        return self._scandata_cache
+
+    @staticmethod
+    def page_in_accessformats(page):
+        add_page = page.find(".{*}addToAccessFormats")
+
+        if add_page is not None and add_page.text.lower() == "false":
+            return False
+
+        return True
 
     def get_pagelist(self):
         logging.debug("Getting IA pagelist for ID {}".format(self.id))
@@ -143,10 +214,7 @@ class IaSource(utils.source.Source):
         pl = utils.pagelist.PageList()
 
         for pg in pages:
-
-            addPage = pg.find(".{*}addToAccessFormats")
-
-            if addPage is not None and addPage.text.lower() == "false":
+            if not self.page_in_accessformats(pg):
                 continue
 
             pageTypeE = pg.find(".{*}pageType")

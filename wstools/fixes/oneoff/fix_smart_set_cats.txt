@@ -1,0 +1,5 @@
+-prefixindex:File:The Smart Set
+-site:commons:commons
+-summary:Fix category
+[[Category:�]]
+[[Category:The Smart Set]]

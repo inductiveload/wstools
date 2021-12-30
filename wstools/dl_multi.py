@@ -9,12 +9,15 @@ from xlsx2csv import Xlsx2csv
 from io import StringIO
 import csv
 import dotenv
+import shutil
 
 import subprocess
 
 import dl_book
 
 import utils.ht_source as HTS
+import utils.range_selection
+import utils.row_map
 
 
 def get_conversion_opts(dl):
@@ -79,7 +82,7 @@ def dls_from_xlsx(filename, rows):
     reader = csv.reader(output, delimiter=',', quotechar='"')
 
     head_row = next(reader)
-    col_map = parse_header_row(head_row)
+    col_map = utils.row_map.ColumnMap(head_row)
 
     row_idx = 1
 
@@ -91,37 +94,49 @@ def dls_from_xlsx(filename, rows):
             logging.debug(f'Skipping row {row_idx}')
             continue
 
-        mapped_row = {}
-        for col in col_map:
-            mapped_row[col.lower()] = row[col_map[col]].strip()
+        mapped_row = utils.row_map.DataRow(col_map, row)
 
         # skip downloads if needed
-        if 'dl' in mapped_row and mapped_row['dl'].lower() in ['n', 'no', '0', 'f']:
+        if not mapped_row.get_bool('dl', True):
             logging.debug(f'Skipping DL for row {row_idx}')
             continue
 
-        srcid = row[col_map['id']].strip()
+        srcid = mapped_row.get('id')
 
-        if 'file' in mapped_row:
-            filename = mapped_row['file']
-        elif 'filename' in mapped_row:
-            filename = mapped_row['filename']
-        else:
-            filename = mapped_row['id']
+        filename = mapped_row.get('file')
 
-        source = mapped_row['source']
+        if not filename:
+            filename = mapped_row.get('filename')
+        if not filename:
+            filename = mapped_row.get('id')
+
+        source = mapped_row.get('source')
 
         if source == 'ht':
             srcid = HTS.normalise_id(srcid)
 
-        dls.append(dl_book.DlDef(source, srcid, filename))
+        dl_def = dl_book.DlDef(source, srcid, filename)
+
+        if mapped_row.get('access') == 'us':
+            dl_def.use_proxy = True
+
+        if mapped_row.get_bool('dl', False):
+            dl_def.force_dl = True
+
+        if mapped_row.get_bool('regen', False):
+            dl_def.regenerate = True
+
+        dl_def.exclude_pages = mapped_row.get_ranges('rm_pages')
+        dl_def.include_pages = mapped_row.get_ranges('only_pages')
+
+        dls.append(dl_def)
     return dls
 
 
 def main():
 
     parser = argparse.ArgumentParser(description='Download and convert')
-    parser.add_argument('-v', '--verbose', action='store_true',
+    parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='show debugging information')
     parser.add_argument('-f', '--dl-file', required=True,
                         help='File-based download list')
@@ -138,7 +153,11 @@ def main():
     parser.add_argument('-T', '--threads', type=int,
                         help='Number of threads to use for conversion')
     parser.add_argument('-x', '--sources', nargs='+',
-                        help='Sources to use (e.g. IA, HT) Default: all')
+                        help='Sources to use (e.g. IA, HT), skip others. Default: all')
+    parser.add_argument('-C', '--skip-convert', action='store_true',
+                        help='Skip conversion stage and download only')
+    parser.add_argument('-H', '--hathi-direct', action='store_true',
+                        help='Use the direct download method for Hathi')
 
     args = parser.parse_args()
 
@@ -154,16 +173,7 @@ def main():
 
     dls = []
 
-    rows = None
-    if args.rows:
-        rows = []
-        for r in args.rows:
-            m = re.match(r'(\d+)-(\d+)', r)
-
-            if m:
-                rows += range(int(m.group(1)), int(m.group(2)))
-            else:
-                rows.append(int(r))
+    rows = utils.range_selection.get_range_selection(args.rows)
 
     if args.dl_file:
 
@@ -179,8 +189,7 @@ def main():
     basedir = os.getenv('WSTOOLS_OUTDIR')
     tmp_dir = "tmp"
     keep_temp = False
-    skip_existing = True
-    skip_convert_if_exists = True
+    skip_existing = args.skip_existing
     threads = args.threads or int(multiprocessing.cpu_count() * 0.8)
 
     if args.sources:
@@ -207,9 +216,12 @@ def main():
 
         output_file = os.path.join(basedir, odir + '.djvu')
 
-        if args.skip_existing and os.path.isfile(output_file):
-            logging.info(f'Skip existing file: {output_file}')
-            continue
+        if os.path.isfile(output_file):
+            if skip_existing:
+                logging.info(f'Skip existing file: {output_file}')
+                continue
+            else:
+                os.remove(output_file)
 
         downloaded = False
         if args.skip_dl:
@@ -217,11 +229,25 @@ def main():
         else:
             # this is the images
             dl.skip_existing = skip_existing
-            dl.use_proxy = args.proxy
+            dl.hathi_direct = args.hathi_direct
             downloaded = dl_book.do_download(dl, dl_dir)
 
-        if skip_convert_if_exists and os.path.exists(output_file):
-            logging.debug("Skipping convert: file exists")
+        # override
+        if args.proxy is not None:
+            dl.use_proxy = args.proxy
+
+        if not args.size:
+            args.size = os.getenv('CONVERT_DEFAULT_SIZE')
+
+        if (downloaded and
+                os.path.isfile(downloaded) and
+                os.path.splitext(downloaded)[1] in ['.djvu', '.pdf']):
+            logging.debug('Skipping conversion because '
+                          f'the source provided the file: {downloaded}')
+            logging.debug(f'Moving to {output_file}')
+            shutil.move(downloaded, output_file)
+        elif args.skip_convert:
+            logging.debug('Skipping conversion due to --skip-convert')
         elif not downloaded:
             logging.debug("Skipping convert: images not downloaded OK")
         else:
@@ -229,9 +255,14 @@ def main():
                    "-i", dl_dir,
                    "-o", output_file,
                    "-t", os.path.join(basedir, tmp_dir),
-                   "-R", "-T", str(threads)]
+                   "-R",
+                   "-T", str(threads)]
 
-            if not keep_temp:
+            # handled at the download step
+            # if dl.exclude_pages:
+            #     cmd += ['--exclude_pages'] + [str(x) for x in dl.exclude_pages]
+
+            if keep_temp:
                 cmd.append("-D")
 
             if dl.filename:
@@ -242,10 +273,11 @@ def main():
             if args.size:
                 cmd += ["-s", str(args.size)]
 
-            if args.verbose:
+            # very verbose also converts in verbose mode
+            if args.verbose > 1:
                 cmd.append("-v")
-                print(cmd)
 
+            logging.debug(cmd)
             subprocess.call(cmd)
 
 

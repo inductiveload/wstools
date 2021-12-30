@@ -1,0 +1,7 @@
+$DI= *[dD](?:ropinitial|oi) *
+-pt:0
+-prefixindex:Page:London - The People of the Abyss.djvu
+-summary:Use {{quote}} rather than {{smaller block}}, as this has better semantics and built-in margins
+-regex
+\{\{ *[Ss]maller block
+{{quote
