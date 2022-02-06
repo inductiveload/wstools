@@ -222,9 +222,11 @@ def convert_img(src, dst):
     if dst_ext == src_ext:
         # nothing to convert
         pass
-    elif src_ext in [".jp2", ".png", ".tif", ".tiff"] and dst_ext in \
+    elif src_ext in [".jp2", ".png", ".ppm", ".tif", ".tiff"] and dst_ext in \
             [".jpg", ".jpeg", ".pnm", ".pbm"]:
         im_generic_convert(src, dst)
+    else:
+        raise RuntimeError(f'Do not know conversion: {src_ext} -> {dst_ext}')
 
 
 def convert_img_ocr(src, dst, params):
@@ -367,7 +369,7 @@ def process_page(img, tempdir, params):
     elif ext in [".jp2"]:
         # convert to JPG
         conv_info['djvusrc'] = dest_root + ".jpg"
-    elif ext in [".png"]:
+    elif ext in ['.png', '.ppm']:
         if ext in params['bitonal_fmts']:
             conv_info['djvusrc'] = dest_root + ".pbm"
         else:

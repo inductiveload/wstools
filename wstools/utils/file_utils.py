@@ -4,7 +4,7 @@ import zipfile
 
 
 def get_image_exts():
-    return [".jpg", ".jpeg", ".jp2", ".png", ".pnm", ".pbm", ".tif", ".tiff"]
+    return [".jpg", ".jpeg", ".jp2", ".png", ".pnm", ".pbm", ".ppm", ".tif", ".tiff"]
 
 
 def dir_has_any_images(d):
