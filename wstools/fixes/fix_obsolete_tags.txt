@@ -1,0 +1,11 @@
+-prefixindex:Page:The Soul of a Bishop.djvu
+-summary:Remove obsolete HTML tags (e.g. <center> → {{center}})
+-regex
+<\s*(center|CENTER)\s*>
+{{center|
+<\s*(big|BIG)\s*>
+{{larger|
+<\s*/\s*(center|CENTER|big|BIG)\s*>
+}}
+\{\{\s*[Ll]arger\s*\|\s*\{\{\s*(?:[Cc](?:enter)?)
+{{center|{{larger

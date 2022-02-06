@@ -1,0 +1,4 @@
+-prefixindex:Tractatus Logico-Philosophicus
+-summary:Fix spelling of Wittgenstein corrected in filename
+Wittengenstein
+Wittgenstein

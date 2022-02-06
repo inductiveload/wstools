@@ -1,0 +1,5 @@
+-prefixindex:On the Sublime
+-summary:Remove sidenote template in mainspace (they are handled by [[H:LAYOUT]], and the templates themselves are no-ops outside page namespace)
+-regex
+\s{{\s*[Ss]idenotes (?:begin|end)\s*}}\s*
+\n

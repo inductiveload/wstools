@@ -1,0 +1,8 @@
+-prefixindex:File:The Strand Magazine
+-summary:Fix license -> {{PD-old-collective}}
+-regex
+\{\{ *(PD-US|PD-old-assumed).?\}\}
+{{PD-old-collective|checked=no}}
+(?<=\|) *until(?= *=)
+expiry
+-help:global

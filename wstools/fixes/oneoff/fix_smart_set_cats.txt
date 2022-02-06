@@ -1,5 +1,5 @@
 -prefixindex:File:The Smart Set
--site:commons:commons
--summary:Fix category
-[[Category:�]]
-[[Category:The Smart Set]]
+-summary:Remove unused <div class=prose> ([[H:LAYOUTS]] will do this now)
+-regex
+\s*<div class=prose>\s*
+\n\n

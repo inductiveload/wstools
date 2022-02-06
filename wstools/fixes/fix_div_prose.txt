@@ -1,0 +1,9 @@
+-prefixindex:On the Sublime
+-summary:Remove unused <div class=prose> ([[H:LAYOUT]] will do this now)
+-regex
+\s*< *(DIV|div) *class=['"]?prose['"]? *>\s*
+\n\n
+\s*</(DIV|div)>\s*
+\n
+\s{{\s*[Ss]idenotes (?:begin|end)\s*}}\s*
+\n

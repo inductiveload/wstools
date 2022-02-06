@@ -1,0 +1,5 @@
+-prefixindex:Page:Possession (Roche, February 1923).pdf
+-summary:Add {{SIC}} for to-day
+-regex
+\b([Tt])o-day
+{{SIC|\1o-day|\1oday}}
