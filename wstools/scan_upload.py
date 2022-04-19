@@ -31,6 +31,9 @@ import utils.range_selection
 import utils.row_map
 import utils.author
 import utils.choose_file
+import utils.index_writer
+import utils.ws_local
+import utils.document_manip
 
 import dl_book
 
@@ -52,12 +55,11 @@ WS_LOCAL = {
     'en': {
         'no_commons': {
             'title': 'Do not move to Commons',
-            'until': 'until',
+            'until': 'expires',
             'reason': 'why'
         },
     },
 }
-
 
 def image_exists_as_image(filepage):
     try:
@@ -282,21 +284,14 @@ def combine_authors_linked(authors):
 
     return utils.string_utils.combine_list(links)
 
-
-def get_sortkey(s):
-    titlewords = s.split()
-    if titlewords[0].lower() in ["the", "a", "an"]:
-        key = " ".join(titlewords[1:]) + ", " + titlewords[0]
-    else:
-        key = ""
-    return key
-
 def is_local(r):
     return bool(r.get('to_ws'))
 
 def get_license_templates(r):
 
     lics = r.get('license').split('/')
+
+    ws_local = utils.ws_local.WsLocal(r.get('ws_lang'))
 
     templates = []
     for lic in lics:
@@ -305,22 +300,26 @@ def get_license_templates(r):
             .replace("—", "-")\
             .replace("–", "-")
 
-        lic = lic.strip().lstrip('{').rstrip('}')
+        lic = lic.strip(' }{')
 
         # fix a common typo
         if lic.lower() in [
-            "pd-old-expired-auto", "pd-us-expired-auto", "pd-us-auto-expired"
+            "pd-old-expired-auto", "pd-us-expired-auto",
+            "pd-us-auto-expired", "pd-old-auto-expired"
         ]:
-            lic == "PD-old-auto-expired"
+            if is_local(r):
+                lic, deathyear_param = ws_local.format_auto_pma_license(lic)
+            else:
+                ## commons
+                lic = "PD-old-auto-expired"
+                deathyear_param = 'deathyear'
 
-        deathyear = r.get('deathyear')
-        if lic == "PD-old-auto-expired" and deathyear:
-            lic += "|deathyear=" + deathyear
+            deathyear = r.get('deathyear')
+            if deathyear:
+                lic += f'|{deathyear_param}={deathyear}'
 
         if is_local(r):
             lic = f'{{{{{lic}}}}}'
-        elif lic.startswith('{{'):
-            pass
         else:
             lic = f'{{{{PD-scan|{lic}}}}}'
 
@@ -332,8 +331,9 @@ def get_license_templates(r):
 def tidy_cats(cats):
 
     def tidy_cat(c):
+        c = re.sub(r'^{{(.+?)}}', r'\1', c)
         c = re.sub(r'^Category\s*:\s*', '', c, re.I)
-        c = re.sub(r'\[\[Category\s*:\s*(.*)\]\]', '\\1', c, re.I)
+        c = re.sub(r'\[\[Category\s*:\s*(.*)\]\]', r'\1', c, re.I)
         return c.strip()
 
     cats = [tidy_cat(c) for c in cats]
@@ -361,325 +361,6 @@ def get_behalf(r):
     if user:
         return f' (on behalf of [[User:{user}]])'
     return ''
-
-def process_oclc(oclc):
-
-    if oclc is None:
-        return None
-
-    if 'worldcat.org' in oclc:
-        return oclc.split('/')[-1]
-
-    return oclc
-
-
-FIELD_MAP = {
-    'en': {
-        'params': {
-            'type': 'Type',
-            'title': 'Title',
-            'lang': 'Language',
-            'volume': 'Volume',
-            'author': 'Author',
-            'translator': 'Translator',
-            'editor': 'Editor',
-            'illustrator': 'Illustrator',
-            'school': 'School',
-            'publisher': 'Publisher',
-            'printer': 'None',
-            'city': 'Address',
-            'year': 'Year',
-            'key': 'Key',
-            'isbn': 'ISBN',
-            'oclc': 'OCLC',
-            'lccn': 'LCCN',
-            'bnf_ark': 'BNF_ARK',
-            'arc': 'ARC',
-            'source': 'Source',
-            'image': 'Image',
-            'progress': 'Progress',
-            'pages': 'Pages',
-            'volumes': 'Volumes',
-            'remarks': 'Remarks',
-            'valid_date': 'Validation date',
-            'transclusion': 'Transclusion',
-            'wikidata': 'Wikidata',
-            'css': 'Css',
-            'header': 'Header',
-            'footer': 'Footer',
-            'width': 'Width',
-        },
-        'title_format': "''{}''",
-        'filename_formats': {
-           'volume': 'Volume {}',
-           'issue': 'Number {}',
-        },
-        'source_formats': {
-            'ia': '{{{{IA|{id}}}}}',
-            'ht': '{{{{HathiTrust|{id}|book}}}}',
-        },
-        'defaults': {
-            'progress': 'X',
-            'transclusion': 'no',
-            'type': 'book',
-        },
-        'field_order': [
-            'type', 'title', 'lang', 'volume', 'author', 'editor',
-            'translator', 'illustrator', 'publisher',  # 'printer',
-            'city', 'year', 'key', 'isbn', 'oclc', 'lccn', 'bnk_ark',
-            'arc', 'source', 'image',
-            'progress', 'transclusion', 'valid_date', 'pages',
-            'remarks', 'wikidata', 'volumes',
-            'width', 'css', 'header', 'footer'
-        ]
-    },
-    'es': {
-        'params': {
-            'title': 'Titulo',
-            'subtitle': 'Subtitulo',
-            'lang': 'Idioma',
-            'volume': 'Volumen',
-            'author': 'Autor',
-            'translator': 'Traductor',
-            'editor': 'Editor',
-            'illustrator': 'Ilustrador',
-            'publisher': 'Editorial',
-            'printer': 'Imprenta',
-            'city': 'Lugar',
-            'file_source': 'Fuente',
-            'year': 'Ano',
-            'key': 'Key',
-            'image': 'Imagen',
-            'progress': 'Progreso',
-            'pages': 'Paginas',
-            'volumes': 'Serie',
-            'remarks': 'Notas',
-            'wikidata': 'Wikidata',
-            'country': 'derechos',
-            'header': 'Header',
-            'footer': 'Footer',
-        },
-        'filename_formats': {
-           'volume': 'Tomo {}'
-        },
-        'source_formats': {
-            'ia': '{{{{IA|{id}}}}}',
-            'ht': '{{{{HathiTrust|{id}}}}}',
-        },
-        'defaults': {
-            'progress': 'C'
-        },
-        'field_order': [
-            'title', 'subtitle', 'lang', 'volume', 'author', 'editor',
-            'translator', 'publisher', 'printer', 'city', 'illustrator',
-            'year', 'country', 'file_source', 'image',
-            'progress', 'pages', 'remarks', 'wikidata', 'volumes',
-            'header', 'footer'
-        ]
-    },
-    'mul': {
-        'params': {
-            'title': 'Title',
-            'lang': 'Language',
-            'author': 'Author',
-            'translator': 'Translator',
-            'editor': 'Editor',
-            'publisher': 'Publisher',
-            'city': 'Address',
-            'year': 'Year',
-            'key': 'Key',
-            'source': 'Source',
-            'image': 'Image',
-            'progress': 'Progress',
-            'pages': 'Pages',
-            'volumes': 'Volumes',
-            'remarks': 'Remarks',
-            'valid_date': 'Validation date',
-            'css': 'Css',
-            'width': 'Width',
-        },
-        'index_formats': {
-        },
-        'filename_formats': {
-           'volume': 'Volume {}',
-           'issue': 'Number {}',
-        },
-        'source_formats': {
-            'ia': '{{{{IA|{id}}}}}',
-            'ht': '{{{{HathiTrust|{id}|book}}}}',
-        },
-        'defaults': {
-            'progress': 'C'
-        },
-        'field_order': [
-            'title', 'lang', 'author', 'translator', 'editor',
-            'year', 'publisher',  # 'printer',
-            'city', 'key', 'source', 'image',
-            'progress', 'volumes', 'pages',
-            'remarks',
-            'width', 'css'
-        ]
-    }
-}
-
-def make_index_content(r, typ, lang, phab_id=None):
-
-    fmap = FIELD_MAP[lang]
-
-    vlist = r.get('vollist') or ""
-
-    if vlist and not vlist.startswith('{{') and not vlist.strip()[0] in ('*:['):
-        vlist = '{{' + vlist + '}}'
-
-    title = r.get('title')
-    subtitle = r.get('subtitle') or ""
-
-    volume = ''
-    if r.get('volume'):
-
-        subpage = r.get('subpage')
-        if not subpage:
-            subpage = "Volume " + r.get('volume')
-
-        subpage_disp = r.get('vol_disp') or subpage
-
-        # append issue if needed
-        issue = r.get('issue')
-        if issue:
-            if not r.get('subpage'):
-                subpage += '/' + fmap['filename_formats']['issue'].format(issue)
-            if not r.get('vol_disp'):
-                subpage_disp += ', ' + fmap['filename_formats']['issue'].format(issue)
-
-        volume = f'[[{title}/{subpage}|{subpage_disp}]]'
-
-    elif r.get('subpage') and r.get('vol_disp'):
-        # it's not a "volume" as such, but still needs a sub-work-level link
-        subpage = r.get('subpage')
-        subpage_disp = r.get('vol_disp') or subpage
-
-        volume = f'[[{title}/{subpage}|{subpage_disp}]]'
-
-    if volume and r.get('vol_detail'):
-        volume += " ({})".format(r.get('vol_detail'))
-
-    # linkify the title
-    title = f'[[{title}]]'
-
-    if 'title_format' in fmap:
-        title = fmap['title_format'].format(title.strip())
-
-    # This wikisource has no volume field
-    if volume and 'volume' not in fmap['params']:
-        title = title + ", " + volume
-
-    year = r.get('year') or (r.get('date') or "")
-    key = get_sortkey(title)
-
-    remarks = ''
-    if phab_id:
-        remarks = f'Pending server-side upload: [[phab:T{phab_id}]]'
-
-    template = mwparserfromhell.nodes.Template(
-        ":MediaWiki:Proofreadpage_index_template"
-    )
-
-    for field in fmap['params']:
-
-        value = None
-        if field == 'type':
-            value = fmap['defaults']['type']
-        elif field == 'source':
-            value = typ
-        elif field == 'lang':
-            value = r.get('language') or ""
-        elif field == 'title':
-            value = title
-        elif field == 'subtitle':
-            value = subtitle
-        elif field == 'volume':
-            value = volume
-        elif field == 'author':
-            value = r.get('ws_author') or ""
-        elif field == 'editor':
-            value = r.get('ws_editor') or ""
-        elif field == 'translator':
-            value = r.get('ws_translator') or ""
-        elif field == 'illustrator':
-            value = r.get('ws_illustrator') or ""
-        elif field == 'publisher':
-            value = r.get('publisher') or ""
-        elif field == 'printer':
-            value = r.get('printer') or ""
-        elif field == 'year':
-            value = year
-        elif field == 'city':
-            value = r.get('city') or ""
-        elif field == 'country':
-            value = r.get('country') or ""
-        elif field == 'image':
-            value = r.get('img_pg') or ""
-        elif field == 'progress':
-            value = r.get('progress') or fmap['defaults']['progress']
-        elif field == 'pages':
-            value = r.get('pagelist') or ""
-        elif field == 'remarks':
-            value = remarks
-        elif field == 'wikidata':
-            value = r.get('wikidata') or ""
-        elif field == 'volumes':
-            value = vlist
-        elif field == 'transclusion':
-            value = r.get('transclusion') or fmap['defaults']['transclusion']
-        elif field == 'valid_date':
-            value = r.get('valid_date') or ""
-        elif field == 'footer':
-            value = r.get('footer') or ""
-        elif field == 'css':
-            value = r.get('css') or ""
-        elif field == 'header':
-            value = r.get('header') or ""
-        elif field == 'footer':
-            value = r.get('footer') or ""
-
-        elif field == 'file_source':
-            format = fmap['source_formats'][r.get('source')]
-            value = format.format(id=r.get('id'))
-
-        elif field == 'oclc':
-            value = process_oclc(r.get('OCLC')) or ""
-        elif field == 'issn':
-            value = r.get('ISSN') or ""
-        elif field == 'lccn':
-            value = r.get('LCCN') or ""
-        elif field == 'bnf_ark':
-            value = r.get('BNF_ARK') or ""
-        elif field == 'arc':
-            value = r.get('ARC') or ""
-        elif field == 'key':
-            value = key
-
-        if value is not None:
-            param = fmap['params'][field]
-
-            # use a formatter if there is one
-            if 'index_formats' in fmap and field in fmap['index_formats']:
-                value = fmap['index_formats'][field].format(value.strip())
-            else:
-                value = value.strip()
-
-            template.add(param, value + '\n')
-
-    template = re.sub(r'\n\n+', '\n', str(template))
-
-    # PWB doesn't link this
-    categories = [] # get_cats(r, 'ws_cats', linkify=True)
-
-    if categories:
-        template += '\n' + '\n'.join(categories)
-
-    return template
-
 
 def make_description(r, typ):
 
@@ -861,6 +542,8 @@ def get_filename(r, ws_lang):
 
     fn = r.get('filename')
 
+    ws_local = utils.ws_local.WsLocal(ws_lang)
+
     if not fn:
         fn = r.get('title')
 
@@ -876,8 +559,7 @@ def get_filename(r, ws_lang):
             fn += f' - {year}'
 
         if volume:
-            vfmt = FIELD_MAP[ws_lang]['filename_formats']['volume']
-            fn += ' - ' + vfmt.format(volume)
+            fn += ' - ' + ws_local.format_filename_part('volume', volume)
 
     return fn
 
@@ -996,8 +678,6 @@ class UploadContext():
         mapped_row = self.r
         if not self.filename:
             filename = mapped_row.get('filename')
-        if not filename:
-            filename = mapped_row.get('id')
 
         source = mapped_row.get('source')
 
@@ -1005,7 +685,7 @@ class UploadContext():
 
         root, ext = os.path.splitext(filename)
 
-        sanitised_id = dl_def.id.replace('/', '_')
+        sanitised_id = dl_def.get_id().replace('/', '_')
 
         if ext.lower() in ['.pdf', '.djvu', '.tiff']:
             odir = root
@@ -1032,6 +712,31 @@ class UploadContext():
 
         self.dl_def = dl_def
         return dl_def
+
+    def find_local_file(self, file_dir):
+
+        # first see if we have a handy local file
+        if file_dir:
+
+            fileroots = [
+                self.dl_def.get_id(),
+                self.r.get('filename')
+            ]
+
+            fileroots = [r for r in fileroots if r]
+
+            candidate_fns = itertools.product(
+                ['.djvu', '.pdf'],
+                fileroots
+            )
+
+            for ext, root in candidate_fns:
+                print(ext, root)
+                fn = os.path.join(file_dir, root + ext)
+                if os.path.isfile(fn):
+                    return fn
+
+        return None
 
     def set_pagelist(self):
         r = self.r
@@ -1091,31 +796,13 @@ class ScanUploader():
             'ws_lang': 'en'
         }
 
-    def find_local_file(self, row):
-
-        # first see if we have a handy local file
-        if self.file_dir:
-            candidate_fns = itertools.product(
-                ['.djvu', '.pdf'],
-                [
-                    utils.source.sanitise_id(row.get('id')),
-                    row.get('filename')
-                ],
-            )
-
-            for ext, root in candidate_fns:
-                fn = os.path.join(self.file_dir, root + ext)
-                if os.path.isfile(fn):
-                    return fn
-
-        return None
-
     def find_better_url(self, r):
 
         tf_root = os.getenv('TOOLFORGE_FILE_STORE_URL')
 
         candidate_exts = ['.djvu', '.pdf']
         candidate_roots = [r.get('id'), r.get('filename')]
+        candidate_roots = [r for r in candidate_roots if r]
 
         for ext, root in itertools.product(candidate_exts, candidate_roots):
             url = tf_root.rstrip('/') + '/' + root + ext
@@ -1133,10 +820,16 @@ class ScanUploader():
         """
 
         dl_def = uctx.construct_dl_def()
-        uctx.downloaded = False
+
+        # first see if we have a handy local file
+        uctx.downloaded = uctx.find_local_file(self.file_dir)
+
+        # if not file_url:
+        #     # first, check for better urls
+        #     file_url = self.find_better_url(r)
         if uctx.skip_dl:
             uctx.downloaded = True
-        else:
+        elif not uctx.downloaded:
             # trigger download, get output dir
             uctx.downloaded = dl_def.do_download(uctx.dl_dir)
 
@@ -1198,7 +891,7 @@ class ScanUploader():
 
         # very verbose also converts in verbose mode
         if self.args.verbose > 1:
-            cmd.append("-v" * self.args.verbose)
+            cmd.append('-' + 'v' * self.args.verbose)
 
         logging.debug(cmd)
         subprocess.check_call(cmd)
@@ -1259,23 +952,15 @@ class ScanUploader():
                 logging.debug("Local file size {} MB: {}".format(
                     os.path.getsize(file_url) // (1024 * 1024), file_url))
         else:
-            # first see if we have a handy local file
-            file_url = self.find_local_file(r)
+            # we have no local URL, so now we should construct a download and
+            # do it
+            self.acquire_file(uctx)
+            output_file = self.convert_file(uctx)
 
-            if not file_url:
-                # first, check for better urls
-                file_url = self.find_better_url(r)
+            if not output_file:
+                raise RuntimeError('No local file and the source cannot provide one')
 
-            if not file_url:
-                # we have no local URL, so now we should construct a download and
-                # do it
-                self.acquire_file(uctx)
-                output_file = self.convert_file(uctx)
-
-                if not output_file:
-                    raise RuntimeError('No local file and the source cannot provide one')
-
-                file_url = output_file
+            file_url = output_file
 
         logging.debug("File source: {}".format(file_url))
 
@@ -1297,16 +982,11 @@ class ScanUploader():
 
             file_url = dl_file
 
+        # if we downloaded the file, we didn't have a chance to delete the pages
         if dl_file and r.get('rem_pg'):
-            pages = split_any(r.get('rem_pg'), [" ", ","])
+            pages = utils.range_selection.get_range_selection(r.get('rem_pg'))
             pages = [int(x) for x in pages]
-            pages.sort(reverse=True)
-
-            for p in pages:
-                if ext == ".djvu":
-                    cmd = ["djvm", "-d", dl_file, str(p)]
-                    logging.debug("Deleting page {}".format(p))
-                    subprocess.call(cmd)
+            utils.document_manip.remove_pages(dl_file, pages, ext=ext)
 
         uctx.set_pagelist()
 
@@ -1450,8 +1130,9 @@ class ScanUploader():
 
         indexpage = pywikibot.proofreadpage.IndexPage(site, title='Index:' + cms_fn)
 
-        index_content = make_index_content(r, filetype, phab_id=phab_id,
-                                           lang=lang)
+        writer = utils.index_writer.IndexWriter(lang)
+
+        index_content = writer.make_index_content(r, filetype, phab_id=phab_id)
         print(index_content)
 
         summary = 'Creating index page to match file' + get_behalf(r)
@@ -1474,6 +1155,7 @@ class ScanUploader():
         # set defaults
         mapped_row.set_default('language', 'en')
         mapped_row.set_default('ws', 'en')
+        mapped_row.set_default('access', 'us')
 
         # data normalisation
         mapped_row.apply('source', str.lower)

@@ -20,7 +20,6 @@ class DlDef():
     def __init__(self, src, id, filename):
         self.src = src.lower()
         self.id = id
-        self.filename = filename
         self.skip_existing = False
         self.use_proxy = False
         self.hathi_direct = False
@@ -29,12 +28,14 @@ class DlDef():
         self.force_dl = False
         self.regenerate = False
 
-        self.source = None
+        self.source = self._get_source()
+
+        self.filename = filename
+
+        if not self.filename:
+            self.filename = self.get_id().replace('/', '_')
 
     def _get_source(self):
-        if self.source is not None:
-            return self.source
-
         if self.src == 'ia':
             self.source = utils.ia_source.IaSource(self.id)
         elif self.src == 'ht':
@@ -46,8 +47,11 @@ class DlDef():
 
         return self.source
 
+    def get_id(self):
+        return self.source.get_id()
+
     def get_pagelist(self):
-        source = self._get_source()
+        source = self.source
         if source:
             pagelist = source.get_pagelist()
             print( pagelist )
@@ -56,28 +60,26 @@ class DlDef():
             return pagelist
         return None
 
-
     def do_download(self, dl_dir):
-        source = self._get_source()
+        source = self.source
 
         if not os.path.exists(dl_dir):
             os.makedirs(dl_dir, exist_ok=True)
 
         if self.src == 'ht':
-            return dl_hathi.download(self.hathi_direct, self.id, dl_dir,
+            return dl_hathi.download(self.hathi_direct, self.get_id(), dl_dir,
                                     skip_existing=self.skip_existing,
                                     proxy=self.use_proxy,
                                     include_pages=self.include_pages,
                                     exclude_pages=self.exclude_pages)
         elif self.src == 'ia':
-            return dl_ia.download(self.id, dl_dir,
+            return dl_ia.download(self.get_id(), dl_dir,
                                 skip_existing=self.skip_existing,
                                 skip_djvu=not self.force_dl,
                                 get_images=self.regenerate,
                                 include_pages=self.include_pages,
                                 exclude_pages=self.exclude_pages)
         elif self.src == 'url':
-
             dest_fn = os.path.join(dl_dir, source.get_file_name())
 
             if self.skip_existing and os.path.exists(dest_fn):
