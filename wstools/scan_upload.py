@@ -889,6 +889,9 @@ class ScanUploader():
         if uctx.target_size is not None:
             cmd += ["-s", str(uctx.target_size)]
 
+        if self.args.bitonal:
+            cmd += ["-b", "*"]
+
         # very verbose also converts in verbose mode
         if self.args.verbose > 1:
             cmd.append('-' + 'v' * self.args.verbose)
@@ -1222,6 +1225,8 @@ def main():
                         help='Keep temporary converted files')
     parser.add_argument('-C', '--skip-convert', action='store_true',
                         help='Skip conversion if possible')
+    parser.add_argument('-B', '--bitonal', action='store_true',
+                        help='Enforce bitonal outputs')
 
     # Upload options
     parser.add_argument('-U', '--skip_upload', action='store_true',

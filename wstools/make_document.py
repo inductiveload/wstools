@@ -341,6 +341,12 @@ def file_is_in_dir(path, dir):
     head, _ = os.path.split(path)
     return head == dir
 
+def ext_is_bitonal(ext, bitonal_formats):
+    if '*' in bitonal_formats:
+        return True
+
+    return ext in bitonal_formats
+
 def process_page(img, tempdir, params):
 
     root, ext = os.path.splitext(img)
@@ -370,7 +376,7 @@ def process_page(img, tempdir, params):
         # convert to JPG
         conv_info['djvusrc'] = dest_root + ".jpg"
     elif ext in ['.png', '.ppm']:
-        if ext in params['bitonal_fmts']:
+        if ext_is_bitonal(ext, params['bitonal_fmts']):
             conv_info['djvusrc'] = dest_root + ".pbm"
         else:
             # PNM is really, really big and we're going to compress it to death anyway
@@ -383,7 +389,7 @@ def process_page(img, tempdir, params):
             # image already bitonal
             conv_info['djvusrc'] = img
 
-        elif ext in params['bitonal_fmts']:
+        elif ext_is_bitonal(ext, params['bitonal_fmts']):
             # colour but we want it bitonal
             conv_info['djvusrc'] = dest_root + ".pbm"
         else:
@@ -529,7 +535,7 @@ def main():
     parser.add_argument('-s', '--djvu-size', type=int,
                         help='The output file max size in MB (not guaranteed)')
     parser.add_argument('-b', '--bitonal-formats', default=[], nargs="+",
-                        help='List of bitonal formats (e.g. \'.png .tiff\'')
+                        help='List of bitonal formats (e.g. \'.png .tiff\' or \'*\' for all')
     parser.add_argument('-H', '--ocr-threshold', type=int, default=50,
                         help='OCR binarisation threshold from 0 to 100, default=50. Higher makes the page blacker.')
     parser.add_argument('-c', '--ocr_crop', type=str,

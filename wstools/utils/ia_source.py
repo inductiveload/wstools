@@ -3,13 +3,14 @@ import requests
 import logging
 
 from lxml import etree
+import re
+import os
 
 import utils.pagelist
 
 import utils.source
 
 import internetarchive
-
 
 class IaSource(utils.source.Source):
 
@@ -132,25 +133,42 @@ class IaSource(utils.source.Source):
     def get_djvu(self):
         return self.get_file("DjVu")
 
-    def get_jpg_list(self, scale):
-
+    def get_jp2_list(self):
         urls = []
 
-        server = self.item.item_metadata['d1']
-        img_dir = self.item.item_metadata['dir']
+        zip_name = self.get_jp2_zip_name()
+        zip_head, _ = os.path.splitext(zip_name)
+        image_prefix = re.sub(r'_jp2$', '', zip_head)
 
-        for page in self.item.item_metadata['page_numbers']['pages']:
-            index = page['leafNum']
-            url = 'https://' + server + '/BookReader/BookReaderImages.php?' + \
-                f'zip={img_dir}/{self.id}_jp2.zip' + \
-                f'&file={self.id}_jp2/{self.id}_{index:04}.jp2' + \
-                f'&id={self.id}&scale={scale}&rotate=0'
+        indexes = self.get_all_output_file_indexes()
+
+        # this is a hack: can we get it from the API?
+        for index in indexes:
+            url = f'https://archive.org/download/{self.id}/' + \
+                f'{zip_name}/{zip_head}%2F{image_prefix}_{index:04}.jp2'
+
             urls.append({
                 'url': url,
                 'index': index,
-                'name': f'{self.id}_{index:04}.jpg'
+                'ext': '.jp2'
             })
         return urls
+
+    def get_jpg_list(self):
+
+        # Just defer to the JP2 function
+        urls = self.get_jp2_list()
+
+        def transform(jp2_url_item):
+            newurl = jp2_url_item.copy()
+            newurl['url'] += f'&ext=jpg'
+            newurl['ext'] = '.jpg'
+            return newurl
+
+        jpg_urls = [transform(url) for url in urls]
+
+        return jpg_urls
+
 
     def get_file_indexes_not_in_output(self):
 
@@ -165,9 +183,22 @@ class IaSource(utils.source.Source):
 
         return indexes
 
+    def get_all_output_file_indexes(self):
+
+        sd = self._get_scandata()
+
+        indexes = []
+
+        for page in sd.findall('.//{*}pageData/{*}page'):
+            if self.page_in_accessformats(page):
+                index = int(page.attrib['leafNum'])
+                indexes.append(index)
+
+        return indexes
+
     def _get_scandata(self):
 
-        if self._scandata_cache:
+        if self._scandata_cache is not None:
             return self._scandata_cache
 
         scandata_name = self._get_files_with_format("Scandata")

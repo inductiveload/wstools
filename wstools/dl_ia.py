@@ -17,6 +17,8 @@ import utils.range_selection
 
 import tqdm
 import requests
+import concurrent.futures
+
 
 
 def file_is_excluded(zipinfo, include_indexes, exclude_indexes):
@@ -41,63 +43,102 @@ def file_is_excluded(zipinfo, include_indexes, exclude_indexes):
 def count_files_in_dir(d) -> int:
     return len([name for name in os.listdir(d) if os.path.isfile(os.path.join(d, name))])
 
-def download_jp2s(ia_src, output_dir, include_pages, exclude_pages, skip_existing):
 
-    zip_name = ia_src.get_jp2_zip_name()
-    zip_root, _ = os.path.splitext(zip_name)
-    zip_outdir = os.path.join(output_dir, zip_root)
+def download_urls(urls, destinations, threads=10, progress=None, skip_existing=False):
+    if len(urls) != len(destinations):
+        print(len(urls), len(destinations))
+        raise ValueError("Each URL must have a destination")
 
-    if (skip_existing and
-        os.path.isdir(zip_outdir) and
-        count_files_in_dir(zip_outdir) > 1): # hax
-        logging.debug(f'Output dir appears to exist in: {zip_outdir}')
-        return output_dir
+    def download_file(url, dest_path):
+
+        if skip_existing and os.path.isfile(dest_path) and os.stat(dest_path).st_size > 0:
+            logging.debug(f"Skipping existing file: {url}")
+            pass
+        else:
+            logging.debug(f"Downloading file: {url}")
+            with requests.get(url) as response:
+                response.raise_for_status()
+                with open(dest_path, 'wb') as f:
+                    f.write(response.content)
+
+        progress.update(n=1)
+
+    dls = zip(urls, destinations)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+
+        future_to_url = {executor.submit(download_file, dl[0], dl[1]): dl for dl in dls}
+
+        for future in concurrent.futures.as_completed(future_to_url):
+
+            url = future_to_url[future]
+            try:
+                future.result()
+            except Exception as exc:
+                print('%r generated an exception: %s' % (url, exc))
+                raise RuntimeError
+
+def filter_indexes(url_infos, include_indexes=[], exclude_indexes=[]):
+
+    def filter_match(url_info):
+        index = url_info['index']
+        if include_indexes:
+            if index not in include_indexes:
+                return False
+
+        if exclude_indexes:
+            if index in exclude_indexes:
+                return False
+
+        return True
+
+    return [ui for ui in url_infos if filter_match(ui)]
+
+
+def download_from_url_list(ia_src, list_function, output_dir, include_pages, exclude_pages, skip_existing):
+
+    if not os.path.isdir(output_dir):
+        raise RuntimeError(f'{output_dir} is not a directory')
 
     exclude_indexes = ia_src.get_file_indexes_not_in_output()
 
     if exclude_pages:
         exclude_indexes += exclude_pages
 
-    zip_fo = ia_src.get_jp2_zip()
+    url_infos = list_function()
+    url_infos = filter_indexes(
+            url_infos, include_indexes=include_pages, exclude_indexes=exclude_pages)
 
-    if zip_fo:
-        logging.debug(f"Extracting ZIP to {output_dir}")
+    def get_destination(url_info):
+        index = url_info['index']
+        ext = url_info['ext']
+        return os.path.join(output_dir, f'{ia_src.id}_{index:04}{ext}')
 
-        if exclude_indexes:
-            def excluder(zip_info):
-                return file_is_excluded(zip_info, include_pages,
-                                        exclude_indexes)
-        else:
-            excluder = None
+    urls = [url_info['url'] for url_info in url_infos]
+    destinations = [get_destination(url_info) for url_info in url_infos]
 
-        utils.file_utils.extract_zip_to(zip_fo, output_dir, excluder)
-        logging.debug("Extraction complete.")
+    progress = tqdm.tqdm(urls)
 
-        zip_fo.close()
-
+    download_urls(urls, destinations, progress=progress, skip_existing=skip_existing)
     return output_dir
 
+def download_jp2s(ia_src, output_dir, include_pages=[], exclude_pages=[], skip_existing=False):
+    return download_from_url_list(
+        ia_src,
+        ia_src.get_jp2_list,
+        output_dir,
+        include_pages,
+        exclude_pages,
+        skip_existing)
 
-def download_jpgs(ia_src, output_dir, include_pages, exclude_pages, scale=3):
-    jpgs = ia_src.get_jpg_list(scale)
-
-    # first, filter the list for includes:
-    if include_pages:
-        jpgs = [j for j in jpgs if j['index'] in include_pages]
-
-    # filter the list for exclusions
-    if exclude_pages:
-        jpgs = [j for j in jpgs if j['index'] not in exclude_pages]
-
-    for img_info in tqdm.tqdm(jpgs):
-
-        r = requests.get(img_info['url'])
-        r.raise_for_status()
-
-        ofile = os.path.join(output_dir, img_info['name'])
-        with open(ofile, 'wb') as ofo:
-            ofo.write(r.content)
-
+def download_jpgs(ia_src, output_dir, include_pages=[], exclude_pages=[], skip_existing=False):
+    return download_from_url_list(
+        ia_src,
+        ia_src.get_jpg_list,
+        output_dir,
+        include_pages,
+        exclude_pages,
+        skip_existing)
 
 def download_djvu(ia_src, output_dir, include_pages, exclude_pages):
 
@@ -112,16 +153,12 @@ def download_djvu(ia_src, output_dir, include_pages, exclude_pages):
 
     return djvu_file
 
-def download(ia_id, output_dir, skip_existing=False,
+def download(src, output_dir, skip_existing=False,
              skip_djvu=False, get_images=False,
              include_pages=[], exclude_pages=[]):
 
     # if os.path.isdir(output_dir) and skip_existing:
     #     return True
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    src = IASRC.IaSource(ia_id)
 
     if skip_djvu and (include_pages or exclude_pages):
         logging.debug('Cannot skip DJVU if adjusting the page ranges')
@@ -187,12 +224,17 @@ def main():
     logging.getLogger("oauthlib").setLevel(logging.WARNING)
     logging.getLogger("requests_oauthlib").setLevel(logging.WARNING)
 
-    download(args.id, args.output_dir,
-             skip_existing=args.skip_existing,
-             get_images=args.get_images,
-             include_pages=args.pages,
-             format=args.format)
+    os.makedirs(args.output_dir, exist_ok=True)
 
+    src = IASRC.IaSource(args.id)
+
+    # download(src, args.output_dir,
+    #          skip_existing=args.skip_existing,
+    #          get_images=args.get_images,
+    #          include_pages=args.pages,
+    #          format=args.format)
+
+    download_jp2s(src, args.output_dir)
 
 if __name__ == "__main__":
     main()

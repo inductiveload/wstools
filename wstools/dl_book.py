@@ -73,7 +73,7 @@ class DlDef():
                                     include_pages=self.include_pages,
                                     exclude_pages=self.exclude_pages)
         elif self.src == 'ia':
-            return dl_ia.download(self.get_id(), dl_dir,
+            return dl_ia.download(self.source, dl_dir,
                                 skip_existing=self.skip_existing,
                                 skip_djvu=not self.force_dl,
                                 get_images=self.regenerate,
