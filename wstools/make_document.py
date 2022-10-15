@@ -197,7 +197,12 @@ def stream_hocr_to_sexp(hocr):
 def get_dir_list_with_exts(d, want_exts):
 
     def want(f):
-        _, ext = os.path.splitext(f)
+        head, ext = os.path.splitext(f)
+
+        # magic suffix to omit a file
+        if head.endswith("_omit"):
+            return False
+
         return os.path.isfile(f) and ext.lower() in want_exts
 
     files = [os.path.join(d, f) for f in os.listdir(d) if want(os.path.join(d, f))]
