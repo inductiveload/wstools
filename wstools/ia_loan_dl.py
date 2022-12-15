@@ -49,6 +49,8 @@ def main():
                         help='First page')
     parser.add_argument('-l', '--last', type=int, required=True,
                         help='Last page')
+    parser.add_argument('-T', '--threads', type=int, default=16,
+                        help='Concurrent download threads')
 
     args = parser.parse_args()
 
@@ -70,7 +72,9 @@ def main():
 
     server, zipn = get_server_and_zipn(args.id)
 
-    dl_threads = 16
+    if args.threads <= 0:
+        parser.error("Threads should be a positive, non-zero number")
+    dl_threads = args.threads
 
     page_iter = range(first_page, last_page + 1)
 
