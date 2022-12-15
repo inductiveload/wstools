@@ -195,8 +195,8 @@ def main():
 
         m = re.match(r'(\d{4})-(\d{1,2})', section)
         if m:
-            year = m.group(1)
-            month = m.group(2)
+            year = int(m.group(1))
+            month = int(m.group(2))
         else:
             year = None
             month = None
