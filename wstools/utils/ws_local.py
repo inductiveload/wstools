@@ -163,24 +163,25 @@ class WsLocal:
 
     def __init__(self, lang):
         self.lang = lang
+        self.fields = FIELD_MAP[lang]
 
     def get_index_field_map(self):
-        return FIELD_MAP[self.lang]['params']
+        return self.fields['params']
 
     def get_index_field_default(self, field):
-        return FIELD_MAP[self.lang]['defaults'][field]
+        return self.fields['defaults'][field]
 
     def get_filename_format_strings(self):
 
-        return FIELD_MAP[self.lang]['filename_formats']
+        return self.fields['filename_formats']
 
     def format_filename_part(self, part, value):
-        formats = FIELD_MAP[self.lang]['filename_formats']
+        formats = self.fields['filename_formats']
         # need to implement
         return formats[part].format(value.strip())
 
     def format_source(self, source_key, source_id):
-        return FIELD_MAP[self.lang]['source_formats'][source_key].format(id=source_id)
+        return self.fields['source_formats'][source_key].format(id=source_id)
 
     def format_index_field(self, field, value):
         field_map = self.get_index_field_map()
@@ -193,5 +194,5 @@ class WsLocal:
         return value
 
     def get_auto_pma_license(self):
-        auto_pma_info = FIELD_MAP['licenses']['auto-pma']
+        auto_pma_info = self.fields['licenses']['auto_pma']
         return auto_pma_info['title'], auto_pma_info['deathyear']
