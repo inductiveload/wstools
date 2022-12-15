@@ -308,7 +308,7 @@ def get_license_templates(r):
             "pd-us-auto-expired", "pd-old-auto-expired"
         ]:
             if is_local(r):
-                lic, deathyear_param = ws_local.format_auto_pma_license(lic)
+                lic, deathyear_param = ws_local.get_auto_pma_license()
             else:
                 ## commons
                 lic = "PD-old-auto-expired"
